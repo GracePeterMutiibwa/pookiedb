@@ -1,10 +1,6 @@
 # PookieDB Documentation
 
 > A Django-style ORM for PostgreSQL and SQLite — with migrations, relationships, a chainable QuerySet API, and an interactive CLI.
->
-> **Author:** Grace Peter Mutiibwa  
-> **Version:** 0.1.0  
-> **Repository:** https://github.com/GracePeterMutiibwa/pookiedb
 
 ---
 
@@ -31,7 +27,7 @@
 19. [Model Registry](#model-registry)
 20. [Utilities](#utilities)
 21. [Exceptions](#exceptions)
-22. [Full Example — Blog Application](#full-example)
+22. [Full Example - Blog Application](#full-example-blog-application)
 
 ---
 
@@ -169,19 +165,19 @@ For migrations-based workflow, use `pookiedb makemigrations` + `pookiedb migrate
 
 Every field accepts these keyword arguments:
 
-| Kwarg | Default | Description |
-|---|---|---|
-| `null` | `False` | Allow `NULL` in the database |
-| `blank` | `False` | Allow empty value during validation |
-| `default` | `None` | Default value or callable |
-| `unique` | `False` | Add `UNIQUE` constraint |
-| `db_index` | `False` | Create a `CREATE INDEX` |
-| `db_column` | field name | Override the DB column name |
-| `primary_key` | `False` | Make this the primary key |
-| `editable` | `True` | Include in save operations |
-| `choices` | `[]` | Restrict to a list of `(value, label)` tuples |
-| `verbose_name` | auto | Human-readable field name |
-| `help_text` | `""` | Description for documentation |
+| Kwarg          | Default    | Description                                   |
+| -------------- | ---------- | --------------------------------------------- |
+| `null`         | `False`    | Allow `NULL` in the database                  |
+| `blank`        | `False`    | Allow empty value during validation           |
+| `default`      | `None`     | Default value or callable                     |
+| `unique`       | `False`    | Add `UNIQUE` constraint                       |
+| `db_index`     | `False`    | Create a `CREATE INDEX`                       |
+| `db_column`    | field name | Override the DB column name                   |
+| `primary_key`  | `False`    | Make this the primary key                     |
+| `editable`     | `True`     | Include in save operations                    |
+| `choices`      | `[]`       | Restrict to a list of `(value, label)` tuples |
+| `verbose_name` | auto       | Human-readable field name                     |
+| `help_text`    | `""`       | Description for documentation                 |
 
 ### String fields
 
@@ -195,7 +191,7 @@ body = pookiedb.TextField()
 # Email with format validation
 email = pookiedb.EmailField()                # max_length=254 by default
 
-# URL with format validation  
+# URL with format validation
 website = pookiedb.URLField()                # max_length=2048 by default
 
 # Slug: letters, numbers, hyphens, underscores only
@@ -502,12 +498,12 @@ class Post(pookiedb.Model):
 
 **On-delete options:**
 
-| Constant | SQL | Behaviour |
-|---|---|---|
-| `CASCADE` | `ON DELETE CASCADE` | Delete related rows |
-| `SET_NULL` | `ON DELETE SET NULL` | Set FK to NULL |
-| `PROTECT` | `ON DELETE RESTRICT` | Raise error if referenced |
-| `DO_NOTHING` | `ON DELETE NO ACTION` | No automatic action |
+| Constant     | SQL                   | Behaviour                 |
+| ------------ | --------------------- | ------------------------- |
+| `CASCADE`    | `ON DELETE CASCADE`   | Delete related rows       |
+| `SET_NULL`   | `ON DELETE SET NULL`  | Set FK to NULL            |
+| `PROTECT`    | `ON DELETE RESTRICT`  | Raise error if referenced |
+| `DO_NOTHING` | `ON DELETE NO ACTION` | No automatic action       |
 
 **Usage:**
 
@@ -639,14 +635,14 @@ except ValidationError as e:
 
 **Built-in validators per field type:**
 
-| Field | Validation |
-|---|---|
-| `CharField` | Value length ≤ `max_length` |
-| `EmailField` | Matches `user@domain.tld` pattern |
-| `URLField` | Must start with `http://` or `https://` |
-| `SlugField` | Only `[-a-zA-Z0-9_]` characters |
-| `JSONField` | Must be valid JSON if stored as string |
-| All fields | `null=False` fields cannot be `None` |
+| Field        | Validation                              |
+| ------------ | --------------------------------------- |
+| `CharField`  | Value length ≤ `max_length`             |
+| `EmailField` | Matches `user@domain.tld` pattern       |
+| `URLField`   | Must start with `http://` or `https://` |
+| `SlugField`  | Only `[-a-zA-Z0-9_]` characters         |
+| `JSONField`  | Must be valid JSON if stored as string  |
+| All fields   | `null=False` fields cannot be `None`    |
 
 **Custom validation:**
 
@@ -1202,7 +1198,7 @@ except pookiedb.DoesNotExist:
 
 ---
 
-## Full Example — Blog Application
+## Full Example - Blog Application
 
 This end-to-end example shows all major features working together.
 
@@ -1441,4 +1437,4 @@ CREATE TABLE IF NOT EXISTS "posts_tags" (
 
 ---
 
-*PookieDB — Built with ❤ by Grace Peter Mutiibwa*
+MIT © Grace Peter Mutiibwa
