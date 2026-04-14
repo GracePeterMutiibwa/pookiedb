@@ -2,6 +2,10 @@
 
 A Django-style Python ORM for **PostgreSQL** and **SQLite** - with auto migrations, relationships, a chainable QuerySet API, and a friendly CLI.
 
+[![Python Version](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://python.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Documentation Status](https://readthedocs.org/projects/pookiedb/badge/?version=latest)](https://pookiedb.readthedocs.io/en/latest/?badge=latest)
+
 ## Installation
 
 ```bash
