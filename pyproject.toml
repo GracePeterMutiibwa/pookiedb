@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# Author: Grace Peter Mutiibwa
+
+[project]
+name = "pookiedb"
+version = "0.1.3"
+description = "A Django-style ORM for PostgreSQL and SQLite with migrations, relationships, and a friendly API."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Grace Peter Mutiibwa" }]
+requires-python = ">=3.10"
+keywords = ["orm", "database", "postgresql", "sqlite", "migrations", "django-style"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "psycopg2-binary>=2.9",
+    "click>=8.1",
+    "rich>=13.0",
+    "python-dateutil>=2.8",
+    "textual>=0.50",
+]
+
+[project.optional-dependencies]
+dev   = ["pytest>=7.4", "pytest-cov", "black", "ruff"]
+shell = ["ipython"]
+
+[project.scripts]
+pookiedb = "pookiedb.cli.main:cli"
+
+[project.urls]
+Homepage   = "https://github.com/GracePeterMutiibwa/pookiedb"
+Repository = "https://github.com/GracePeterMutiibwa/pookiedb"
+
+[tool.setuptools.packages.find]
+where   = ["."]
+include = ["pookiedb*"]
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

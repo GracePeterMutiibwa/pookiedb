@@ -1,0 +1,1444 @@
+# PookieDB Documentation
+
+> A Django-style ORM for PostgreSQL and SQLite — with migrations, relationships, a chainable QuerySet API, and an interactive CLI.
+>
+> **Author:** Grace Peter Mutiibwa  
+> **Version:** 0.1.0  
+> **Repository:** https://github.com/GracePeterMutiibwa/pookiedb
+
+---
+
+## Table of Contents
+
+1. [Installation](#installation)
+2. [Quick Start](#quick-start)
+3. [Connecting to a Database](#connecting-to-a-database)
+4. [Defining Models](#defining-models)
+5. [Field Reference](#field-reference)
+6. [QuerySet API](#queryset-api)
+7. [Lookup Types](#lookup-types)
+8. [Q Objects — Complex Queries](#q-objects)
+9. [Relationships](#relationships)
+10. [Special Fields](#special-fields)
+11. [Validation](#validation)
+12. [Migrations](#migrations)
+13. [CLI Reference](#cli-reference)
+14. [Transactions](#transactions)
+15. [Aggregates](#aggregates)
+16. [Pagination](#pagination)
+17. [Raw SQL](#raw-sql)
+18. [Multiple Databases](#multiple-databases)
+19. [Model Registry](#model-registry)
+20. [Utilities](#utilities)
+21. [Exceptions](#exceptions)
+22. [Full Example — Blog Application](#full-example)
+
+---
+
+## Installation
+
+```bash
+pip install pookiedb
+
+# PostgreSQL support ships by default (psycopg2-binary)
+# IPython shell support:
+pip install "pookiedb[shell]"
+```
+
+**Requirements:** Python ≥ 3.10
+
+---
+
+## Quick Start
+
+```python
+import pookiedb
+
+# 1. Connect
+pookiedb.connect("sqlite:///mydb.sqlite3")
+
+# 2. Define a model
+class Author(pookiedb.Model):
+    name  = pookiedb.CharField(max_length=100)
+    email = pookiedb.EmailField(unique=True)
+    joined = pookiedb.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "authors"
+
+# 3. Create the table
+Author.create_table()
+
+# 4. Use it
+grace = Author.objects.create(name="Grace Mutiibwa", email="grace@example.com")
+all_authors = Author.objects.all()
+```
+
+---
+
+## Connecting to a Database
+
+PookieDB supports **SQLite** and **PostgreSQL**. Register a connection once at startup before using any models.
+
+### URL-style (recommended)
+
+```python
+import pookiedb
+
+# SQLite file
+pookiedb.connect("sqlite:///mydb.sqlite3")
+
+# SQLite in-memory (testing)
+pookiedb.connect("sqlite://:memory:")
+
+# PostgreSQL
+pookiedb.connect("postgresql://user:password@localhost:5432/mydb")
+```
+
+### Keyword-style
+
+```python
+# SQLite
+pookiedb.connect(engine="sqlite", name="mydb.sqlite3")
+
+# PostgreSQL
+pookiedb.connect(
+    engine="postgresql",
+    name="mydb",
+    host="localhost",
+    port=5432,
+    user="postgres",
+    password="secret",
+)
+```
+
+### Named aliases (multiple databases)
+
+```python
+pookiedb.connect("postgresql://user:pass@host/primary_db", alias="primary")
+pookiedb.connect("sqlite:///analytics.db", alias="analytics")
+```
+
+The `alias="default"` is used automatically by all models unless overridden in `Meta`.
+
+---
+
+## Defining Models
+
+Every model is a Python class that subclasses `pookiedb.Model`. Fields are class-level attributes. An inner `Meta` class provides table-level configuration.
+
+```python
+class Post(pookiedb.Model):
+    title      = pookiedb.CharField(max_length=200)
+    slug       = pookiedb.SlugField(unique=True)
+    body       = pookiedb.TextField()
+    author     = pookiedb.ForeignKey("Author", on_delete=pookiedb.CASCADE)
+    published  = pookiedb.BooleanField(default=False)
+    view_count = pookiedb.IntegerField(default=0)
+    metadata   = pookiedb.JSONField(null=True)
+    created_at = pookiedb.DateTimeField(auto_now_add=True)
+    updated_at = pookiedb.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table        = "posts"              # table name (default: classname + "s")
+        ordering        = ["-created_at"]      # default ORDER BY
+        unique_together = [["author", "slug"]] # multi-column UNIQUE
+        db_alias        = "default"            # which connection to use
+        verbose_name    = "blog post"
+        verbose_name_plural = "blog posts"
+```
+
+### Auto primary key
+
+PookieDB automatically adds an `id = AutoField(primary_key=True)` unless you define a field with `primary_key=True`.
+
+### Creating tables
+
+```python
+Author.create_table()   # CREATE TABLE IF NOT EXISTS
+Post.create_table()     # also creates FK constraints and M2M join tables
+```
+
+For migrations-based workflow, use `pookiedb makemigrations` + `pookiedb migrate` instead.
+
+---
+
+## Field Reference
+
+### Common kwargs
+
+Every field accepts these keyword arguments:
+
+| Kwarg | Default | Description |
+|---|---|---|
+| `null` | `False` | Allow `NULL` in the database |
+| `blank` | `False` | Allow empty value during validation |
+| `default` | `None` | Default value or callable |
+| `unique` | `False` | Add `UNIQUE` constraint |
+| `db_index` | `False` | Create a `CREATE INDEX` |
+| `db_column` | field name | Override the DB column name |
+| `primary_key` | `False` | Make this the primary key |
+| `editable` | `True` | Include in save operations |
+| `choices` | `[]` | Restrict to a list of `(value, label)` tuples |
+| `verbose_name` | auto | Human-readable field name |
+| `help_text` | `""` | Description for documentation |
+
+### String fields
+
+```python
+# VARCHAR with length validation
+name = pookiedb.CharField(max_length=255)
+
+# Unlimited text
+body = pookiedb.TextField()
+
+# Email with format validation
+email = pookiedb.EmailField()                # max_length=254 by default
+
+# URL with format validation  
+website = pookiedb.URLField()                # max_length=2048 by default
+
+# Slug: letters, numbers, hyphens, underscores only
+slug = pookiedb.SlugField()                  # max_length=100 by default
+```
+
+### Numeric fields
+
+```python
+count    = pookiedb.IntegerField(default=0)
+big_id   = pookiedb.BigIntegerField()
+score    = pookiedb.FloatField(default=0.0)
+price    = pookiedb.DecimalField(max_digits=10, decimal_places=2)
+```
+
+### Boolean field
+
+```python
+active = pookiedb.BooleanField(default=True)
+# PostgreSQL: BOOLEAN; SQLite: INTEGER (0/1)
+```
+
+### Date and time fields
+
+```python
+# Fixed timestamp set once on creation
+created_at = pookiedb.DateTimeField(auto_now_add=True)
+
+# Updated to current time on every save
+updated_at = pookiedb.DateTimeField(auto_now=True)
+
+# Manual date/datetime
+published_on = pookiedb.DateField()
+event_time   = pookiedb.DateTimeField()
+open_at      = pookiedb.TimeField()
+```
+
+### UUID field
+
+```python
+# Auto-generates a UUID v4 on creation
+uid = pookiedb.UUIDField(auto=True, editable=False)
+
+# Manual UUID
+external_id = pookiedb.UUIDField()
+```
+
+### Auto / Primary key fields
+
+```python
+id     = pookiedb.AutoField(primary_key=True)     # SERIAL / AUTOINCREMENT
+big_id = pookiedb.BigAutoField(primary_key=True)  # BIGSERIAL
+```
+
+### Relationship fields (see [Relationships](#relationships))
+
+```python
+author   = pookiedb.ForeignKey("Author", on_delete=pookiedb.CASCADE)
+profile  = pookiedb.OneToOneField("Profile", on_delete=pookiedb.CASCADE)
+tags     = pookiedb.ManyToManyField("Tag")
+```
+
+### Special fields (see [Special Fields](#special-fields))
+
+```python
+metadata = pookiedb.JSONField(null=True)
+keywords = pookiedb.ArrayField(base_field=pookiedb.CharField(max_length=50))
+```
+
+---
+
+## QuerySet API
+
+PookieDB's QuerySet is **lazy** — queries are only executed when results are consumed. Every method returns a new QuerySet, allowing unlimited chaining.
+
+### Accessing the manager
+
+```python
+Author.objects           # default manager
+Author.objects.all()     # all rows
+```
+
+### Creating records
+
+```python
+# Single create
+grace = Author.objects.create(name="Grace", email="grace@example.com")
+
+# Instantiate and save separately
+a = Author(name="Bob", email="bob@example.com")
+a.save()
+
+# Bulk create (one INSERT statement per batch)
+objs = [Author(name=f"User{i}", email=f"u{i}@ex.com") for i in range(100)]
+Author.objects.bulk_create(objs, batch_size=50)
+```
+
+### Retrieving records
+
+```python
+# Single object by primary key
+author = Author.objects.get(pk=1)
+author = Author.objects.get(id=1)
+
+# Single object by any field
+post = Post.objects.get(slug="my-post")
+
+# get() raises DoesNotExist if nothing found
+# get() raises MultipleObjectsReturned if more than one found
+
+# First / last
+first = Author.objects.order_by("id").first()   # None if empty
+last  = Author.objects.order_by("id").last()
+
+# get_or_create — returns (obj, created_bool)
+author, created = Author.objects.get_or_create(
+    email="grace@example.com",
+    defaults={"name": "Grace"}
+)
+
+# update_or_create — returns (obj, created_bool)
+author, created = Author.objects.update_or_create(
+    email="grace@example.com",
+    defaults={"name": "Grace Updated"}
+)
+```
+
+### Filtering
+
+```python
+# Exact match (default lookup)
+Author.objects.filter(name="Grace")
+
+# Chain filters (AND logic)
+Post.objects.filter(published=True).filter(author=grace)
+
+# Exclude
+Post.objects.exclude(published=False)
+
+# Combine filter + exclude
+Post.objects.filter(author=grace).exclude(slug="draft-post")
+```
+
+### Ordering
+
+```python
+Author.objects.order_by("name")        # ascending
+Author.objects.order_by("-name")       # descending
+Author.objects.order_by("name", "-id") # multiple columns
+```
+
+### Slicing and pagination
+
+```python
+# Python-style slicing (returns a new QuerySet)
+first_ten  = Post.objects.all()[:10]
+second_ten = Post.objects.all()[10:20]
+
+# Explicit limit / offset
+page = Post.objects.order_by("id").offset(20).limit(10)
+
+# Integer index (returns single object)
+first = Post.objects.all()[0]
+```
+
+### Counting
+
+```python
+Post.objects.count()                     # total rows
+Post.objects.filter(published=True).count()
+Post.objects.exists()                    # True / False (faster than count > 0)
+Post.objects.filter(author=grace).exists()
+```
+
+### Projection
+
+```python
+# Returns list of dicts
+rows = Author.objects.values("name", "email")
+# [{"name": "Grace", "email": "grace@ex.com"}, ...]
+
+# Returns list of tuples
+rows = Author.objects.values_list("name", "email")
+# [("Grace", "grace@ex.com"), ...]
+
+# Flat list of a single field
+ids = Author.objects.values_list("id", flat=True)
+# [1, 2, 3, ...]
+```
+
+### Updating records
+
+```python
+# Update a single instance
+author.name = "Grace P. Mutiibwa"
+author.save()
+
+# Partial update (only specified fields)
+author.save(update_fields=["name"])
+
+# Bulk update matching rows
+Post.objects.filter(author=grace).bulk_update(published=True)
+
+# Re-fetch from DB
+author.refresh_from_db()
+```
+
+### Deleting records
+
+```python
+# Delete single instance
+author.delete()
+
+# Delete all matching rows
+Post.objects.filter(published=False).delete()
+```
+
+---
+
+## Lookup Types
+
+Django-style double-underscore lookups apply to any `filter()`, `exclude()`, or `Q()` call.
+
+```python
+# Exact (default when no lookup specified)
+filter(name="Grace")
+filter(name__exact="Grace")
+
+# Case-insensitive exact
+filter(name__iexact="grace")
+
+# Contains substring
+filter(name__contains="Mut")      # case-sensitive
+filter(name__icontains="mut")     # case-insensitive
+
+# Starts / ends with
+filter(name__startswith="Gr")
+filter(name__istartswith="gr")
+filter(name__endswith="wa")
+filter(name__iendswith="WA")
+
+# Numeric comparisons
+filter(score__gt=9.0)             # >
+filter(score__gte=9.0)            # >=
+filter(score__lt=5.0)             # <
+filter(score__lte=5.0)            # <=
+
+# IN list
+filter(id__in=[1, 2, 3])
+
+# Range (inclusive on both ends)
+filter(score__range=(1.0, 9.0))
+
+# NULL check
+filter(bio__isnull=True)
+filter(bio__isnull=False)
+
+# Not equal
+filter(name__ne="Admin")
+```
+
+---
+
+## Q Objects
+
+`Q` objects let you build complex `AND`, `OR`, and `NOT` conditions.
+
+```python
+from pookiedb.queryset.queryset import Q
+
+# OR: either Alice or Bob
+Author.objects.filter(Q(name="Alice") | Q(name="Bob"))
+
+# AND: name is Alice AND email domain is example.com
+Author.objects.filter(Q(name="Alice") & Q(email__endswith="@example.com"))
+
+# NOT: everyone except Alice
+Author.objects.filter(~Q(name="Alice"))
+
+# Complex nested: (Alice OR Bob) AND NOT admin accounts
+Author.objects.filter(
+    (Q(name="Alice") | Q(name="Bob")) & ~Q(email__icontains="admin")
+)
+
+# Q objects work in exclude() too
+Post.objects.exclude(Q(published=False) | Q(author__isnull=True))
+```
+
+---
+
+## Relationships
+
+### ForeignKey — many-to-one
+
+```python
+class Post(pookiedb.Model):
+    author = pookiedb.ForeignKey(
+        "Author",
+        on_delete=pookiedb.CASCADE,   # CASCADE | SET_NULL | PROTECT | DO_NOTHING
+        related_name="posts",
+        null=False,
+    )
+```
+
+**On-delete options:**
+
+| Constant | SQL | Behaviour |
+|---|---|---|
+| `CASCADE` | `ON DELETE CASCADE` | Delete related rows |
+| `SET_NULL` | `ON DELETE SET NULL` | Set FK to NULL |
+| `PROTECT` | `ON DELETE RESTRICT` | Raise error if referenced |
+| `DO_NOTHING` | `ON DELETE NO ACTION` | No automatic action |
+
+**Usage:**
+
+```python
+# Create with an instance
+post = Post.objects.create(title="Hello", slug="hello", body="...", author=grace)
+
+# Create with a raw FK id
+post = Post(title="Hello", slug="hello", body="...", author_id=grace.id)
+post.save()
+
+# Lazy-loaded access (queries the DB on first access)
+post = Post.objects.get(pk=1)
+print(post.author.name)   # SELECT * FROM authors WHERE id = ?
+
+# Filter by FK instance
+Post.objects.filter(author=grace)
+
+# Filter by FK id
+Post.objects.filter(author_id=grace.id)
+```
+
+### OneToOneField
+
+```python
+class UserProfile(pookiedb.Model):
+    author = pookiedb.OneToOneField(
+        "Author",
+        on_delete=pookiedb.CASCADE
+    )
+    avatar = pookiedb.URLField(null=True)
+    prefs  = pookiedb.JSONField(default=dict)
+```
+
+Behaves exactly like `ForeignKey` but enforces a `UNIQUE` constraint on the column, ensuring each Author can only have one Profile.
+
+### ManyToManyField
+
+```python
+class Post(pookiedb.Model):
+    tags = pookiedb.ManyToManyField("Tag", related_name="posts")
+```
+
+PookieDB automatically creates a join table (e.g. `posts_tags`).
+
+**Manager methods:**
+
+```python
+post = Post.objects.get(pk=1)
+tag  = Tag.objects.get(name="python")
+
+# Add a related object
+post.tags.add(tag)
+
+# Remove a related object
+post.tags.remove(tag)
+
+# Replace all related objects
+post.tags.set([tag1, tag2, tag3])
+
+# Remove all related objects
+post.tags.clear()
+
+# Fetch all related objects (returns a list)
+all_tags = post.tags.all()
+
+# Count related objects
+post.tags.count()
+```
+
+Adding the same tag twice is silently ignored — the join table has a `UNIQUE` constraint on `(post_id, tag_id)`.
+
+---
+
+## Special Fields
+
+### JSONField
+
+Stores arbitrary Python dicts or lists. On PostgreSQL, backed by native `JSONB`; on SQLite, serialized to `TEXT`.
+
+```python
+class Event(pookiedb.Model):
+    data = pookiedb.JSONField(null=True)
+    meta = pookiedb.JSONField(default=dict)
+
+# Any JSON-serializable structure
+event = Event.objects.create(
+    data={"type": "click", "coords": [100, 200], "user": {"id": 5}},
+    meta={"version": 2}
+)
+
+fetched = Event.objects.get(pk=event.id)
+print(fetched.data["type"])      # "click"
+print(fetched.data["coords"][0]) # 100
+print(fetched.meta["version"])   # 2
+```
+
+### ArrayField
+
+Stores a list of values. On PostgreSQL, uses a native `ARRAY` type. On SQLite, serializes to `TEXT` as JSON.
+
+```python
+class Article(pookiedb.Model):
+    keywords = pookiedb.ArrayField(
+        base_field=pookiedb.CharField(max_length=50)
+    )
+
+article = Article.objects.create(keywords=["orm", "python", "sqlite"])
+fetched  = Article.objects.get(pk=article.id)
+print(fetched.keywords)   # ["orm", "python", "sqlite"]
+```
+
+---
+
+## Validation
+
+PookieDB validates field values before every `save()`. You can also call `full_clean()` manually without saving.
+
+```python
+from pookiedb.exceptions import ValidationError
+
+author = Author(name="Bad Actor", email="not-a-valid-email")
+try:
+    author.save()           # raises ValidationError
+except ValidationError as e:
+    print(e)                # Validation failed: {'email': "..."}
+    print(e.field)          # "email"  (for single-field errors)
+```
+
+**Built-in validators per field type:**
+
+| Field | Validation |
+|---|---|
+| `CharField` | Value length ≤ `max_length` |
+| `EmailField` | Matches `user@domain.tld` pattern |
+| `URLField` | Must start with `http://` or `https://` |
+| `SlugField` | Only `[-a-zA-Z0-9_]` characters |
+| `JSONField` | Must be valid JSON if stored as string |
+| All fields | `null=False` fields cannot be `None` |
+
+**Custom validation:**
+
+Override `clean()` on your model for model-level rules:
+
+```python
+class Event(pookiedb.Model):
+    start = pookiedb.DateTimeField()
+    end   = pookiedb.DateTimeField()
+
+    def clean(self):
+        if self.end and self.start and self.end < self.start:
+            raise ValidationError("End must be after start.")
+```
+
+---
+
+## Migrations
+
+PookieDB has a Django-style migration system that tracks schema changes and applies them incrementally.
+
+### Workflow
+
+```
+pookiedb makemigrations --settings settings.py   # detect changes, write .py file
+pookiedb migrate        --settings settings.py   # apply pending migrations
+pookiedb showmigrations --settings settings.py   # list status of all migrations
+pookiedb rollback       --settings settings.py   # undo last migration
+```
+
+### Settings file
+
+Your `settings.py` must call `pookiedb.connect()` and import all your models:
+
+```python
+# settings.py
+import pookiedb
+from myapp.models import Author, Post, Tag
+
+pookiedb.connect("sqlite:///mydb.sqlite3")
+```
+
+### makemigrations
+
+Compares your current model definitions against the last saved schema snapshot (`.pookie_snapshot.json`) and generates a migration file.
+
+```bash
+pookiedb makemigrations --settings settings.py
+# Output: migrations/0001_auto_20250101_120000.py
+
+# Custom migration name
+pookiedb makemigrations --name add_view_count --settings settings.py
+# Output: migrations/0002_add_view_count.py
+```
+
+Each migration file is a plain Python module with a `Migration` subclass:
+
+```python
+from pookiedb.migrations.runner import Migration, CreateTable, AddColumn, ...
+
+class Migration_0001_auto_20250101_120000(Migration):
+    name = "0001_auto_20250101_120000"
+    dependencies = []
+
+    operations = [
+        CreateTable("authors", [...], [...]),
+        CreateTable("posts", [...], [...]),
+    ]
+```
+
+### migrate
+
+Applies all unapplied migrations in alphabetical order. Applied migrations are tracked in a `pookie_migrations` table.
+
+```bash
+pookiedb migrate --settings settings.py
+# ✓ Applied: 0001_auto_20250101_120000
+# ✓ Applied: 0002_add_view_count
+# Done. 2 migration(s) applied.
+
+# Already up-to-date
+pookiedb migrate --settings settings.py
+# Already up to date. No migrations to apply.
+
+# Fake: mark as applied without running SQL
+pookiedb migrate --fake --settings settings.py
+```
+
+### showmigrations
+
+```bash
+pookiedb showmigrations --settings settings.py
+# ┏━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+# ┃ Status ┃ Migration Name                    ┃
+# ┡━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+# │ ✓      │ 0001_auto_20250101_120000          │
+# │ ○      │ 0002_add_view_count                │
+# └────────┴───────────────────────────────────┘
+```
+
+### rollback
+
+Rolls back the last N applied migrations by calling each migration's `unapply()` which executes `backward_sql`.
+
+```bash
+pookiedb rollback --steps 1 --settings settings.py
+# ↩ Rolled back: 0002_add_view_count
+
+pookiedb rollback --steps 2 --settings settings.py
+```
+
+### Migration operations
+
+You can write or edit migrations manually using these operation classes:
+
+```python
+from pookiedb.migrations.runner import (
+    CreateTable, AddColumn, DropColumn, AlterColumn,
+    CreateIndex, DropTable, RawSQL
+)
+
+# Create a new table
+CreateTable("users", [
+    {"name": "id",    "sql": '"id" INTEGER PRIMARY KEY AUTOINCREMENT'},
+    {"name": "email", "sql": '"email" VARCHAR(254) NOT NULL UNIQUE'},
+], constraints=[])
+
+# Add a column to existing table
+AddColumn("posts", "view_count", '"view_count" INTEGER NOT NULL DEFAULT 0')
+
+# Drop a column (PostgreSQL only)
+DropColumn("posts", "legacy_field")
+
+# Create an index
+CreateIndex("posts", "slug", unique=True)
+
+# Run arbitrary SQL
+RawSQL(
+    forward="ALTER TABLE posts ADD COLUMN featured BOOLEAN DEFAULT FALSE",
+    backward="ALTER TABLE posts DROP COLUMN featured",
+)
+```
+
+### Programmatic usage
+
+```python
+from pookiedb.migrations.runner import make_migrations
+from pookiedb.migrations.executor import migrate, rollback, show_migrations
+
+# Generate migration
+path = make_migrations("migrations/", db_alias="default")
+
+# Apply all pending
+applied = migrate("migrations/", db_alias="default")
+print(applied)  # ["0001_auto_...", "0002_add_column"]
+
+# Show status
+migs = show_migrations("migrations/", db_alias="default")
+for m in migs:
+    print(m["name"], "✓" if m["applied"] else "○")
+
+# Roll back 1 step
+rolled = rollback("migrations/", db_alias="default", steps=1)
+```
+
+---
+
+## CLI Reference
+
+After installing pookiedb, the `pookiedb` command is available globally.
+
+```
+pookiedb --help
+```
+
+### pookiedb init
+
+Launches a full-screen **Textual TUI wizard** that scaffolds a new project interactively.
+
+```bash
+pookiedb init
+```
+
+The wizard walks you through 5 steps:
+
+1. **Project name** — directory and Python package name
+2. **Database engine** — SQLite or PostgreSQL
+3. **Connection details** — database name, host, port, user, password
+4. **First model** — optional model class with field definitions
+5. **Author info** — name, email, version for pyproject.toml
+
+Output (example for a `blog` project):
+
+```
+blog/
+├── settings.py          # pookiedb.connect() pre-filled
+├── pyproject.toml       # package metadata
+├── README.md            # setup instructions
+├── .gitignore
+├── migrations/
+│   └── __init__.py
+└── blog/
+    ├── __init__.py
+    └── models.py        # your first model, ready to use
+```
+
+### pookiedb makemigrations
+
+```bash
+pookiedb makemigrations [OPTIONS]
+
+Options:
+  -n, --name TEXT           Custom migration name
+  -d, --migrations-dir DIR  Migration directory (default: migrations)
+  --db TEXT                 DB alias (default: default)
+  -s, --settings PATH       Settings module to load
+```
+
+### pookiedb migrate
+
+```bash
+pookiedb migrate [OPTIONS]
+
+Options:
+  -d, --migrations-dir DIR  Migration directory (default: migrations)
+  --db TEXT                 DB alias (default: default)
+  --fake                    Mark as applied without running SQL
+  -s, --settings PATH       Settings module to load
+```
+
+### pookiedb rollback
+
+```bash
+pookiedb rollback [OPTIONS]
+
+Options:
+  --steps INT               Number of migrations to roll back (default: 1)
+  -d, --migrations-dir DIR  Migration directory (default: migrations)
+  --db TEXT                 DB alias (default: default)
+  -s, --settings PATH       Settings module to load
+```
+
+### pookiedb showmigrations
+
+```bash
+pookiedb showmigrations [OPTIONS]
+
+Options:
+  -d, --migrations-dir DIR  Migration directory (default: migrations)
+  --db TEXT                 DB alias (default: default)
+  -s, --settings PATH       Settings module to load
+```
+
+### pookiedb shell
+
+Drops you into an interactive Python REPL (IPython if installed, else stdlib `code.interact`) with `pookiedb` and all registered models already imported.
+
+```bash
+pookiedb shell --settings settings.py
+
+# Inside the shell:
+>>> Author.objects.all()
+>>> Post.objects.filter(published=True).count()
+>>> grace = Author.objects.get(email="grace@example.com")
+>>> grace.name
+'Grace Mutiibwa'
+```
+
+### pookiedb dbshell
+
+Opens the native database shell for the configured database.
+
+```bash
+pookiedb dbshell --settings settings.py
+# SQLite → opens sqlite3 CLI
+# PostgreSQL → opens psql
+```
+
+### pookiedb inspectdb
+
+Introspects an existing database and outputs PookieDB model code.
+
+```bash
+# All tables
+pookiedb inspectdb --settings settings.py
+
+# Single table
+pookiedb inspectdb --table users --settings settings.py
+
+# Write to file
+pookiedb inspectdb --output models.py --settings settings.py
+```
+
+Example output:
+
+```python
+# Auto-generated by pookiedb inspectdb
+import pookiedb
+
+class Authors(pookiedb.Model):
+    id    = pookiedb.IntegerField()
+    name  = pookiedb.CharField(max_length=100)
+    email = pookiedb.CharField(max_length=254)
+
+    class Meta:
+        db_table = 'authors'
+```
+
+---
+
+## Transactions
+
+Use the `transaction()` context manager for atomic blocks. On success, the transaction commits. On exception, it rolls back automatically.
+
+```python
+from pookiedb.db.connection import transaction
+
+with transaction():
+    author = Author.objects.create(name="Grace", email="grace@ex.com")
+    post   = Post.objects.create(title="Hello", slug="hello", body="...", author=author)
+    # Both inserts commit together
+
+# Rollback on exception
+try:
+    with transaction():
+        author = Author.objects.create(name="Bob", email="bob@ex.com")
+        raise ValueError("something went wrong")
+        post = Post.objects.create(...)  # never reached
+except ValueError:
+    pass
+# author was rolled back — not in the database
+
+# Named connection
+with transaction(alias="secondary"):
+    ...
+```
+
+---
+
+## Aggregates
+
+Use `.aggregate()` on a QuerySet with aggregate expressions:
+
+```python
+from pookiedb.queryset.queryset import Sum, Avg, Max, Min, Count
+
+# Total views across all published posts
+result = Post.objects.filter(published=True).aggregate(
+    total_views=Sum("view_count"),
+    avg_views=Avg("view_count"),
+    max_views=Max("view_count"),
+    min_views=Min("view_count"),
+    post_count=Count("id"),
+)
+print(result)
+# {"total_views": 15230, "avg_views": 304.6, "max_views": 5000,
+#  "min_views": 1, "post_count": 50}
+```
+
+The `.count()` shortcut is equivalent to `.aggregate(n=Count("id"))["n"]` but faster:
+
+```python
+Post.objects.filter(published=True).count()   # 50
+```
+
+---
+
+## Pagination
+
+```python
+from pookiedb.utils import Paginator
+
+# Paginate any QuerySet
+qs = Post.objects.filter(published=True).order_by("-created_at")
+paginator = Paginator(qs, per_page=20)
+
+# Access a page
+page1 = paginator.page(1)
+
+print(page1.object_list)         # list of Post instances for page 1
+print(paginator.count)           # total matching rows
+print(paginator.num_pages)       # total pages
+print(page1.has_next())          # True / False
+print(page1.has_previous())      # True / False
+print(page1.next_page_number())  # 2
+print(page1.previous_page_number()) # raises ValueError if no previous
+
+# Iterate over all page numbers
+for page_num in paginator.page_range:
+    page = paginator.page(page_num)
+    process(page.object_list)
+```
+
+**Web framework example (Django-style view):**
+
+```python
+def post_list(request):
+    qs        = Post.objects.filter(published=True).order_by("-created_at")
+    paginator = Paginator(qs, per_page=10)
+    page_num  = int(request.GET.get("page", 1))
+    page      = paginator.page(page_num)
+    return render(request, "posts/list.html", {"page": page})
+```
+
+---
+
+## Raw SQL
+
+When the QuerySet API isn't enough, drop down to raw SQL.
+
+```python
+# Via manager — returns model instances
+results = Author.objects.raw(
+    "SELECT * FROM authors WHERE name ILIKE %s",
+    ["%grace%"]
+)
+for author in results:
+    print(author.name)
+
+# SQLite uses ? placeholders
+results = Author.objects.raw(
+    "SELECT * FROM authors WHERE name LIKE ?",
+    ["%grace%"]
+)
+
+# Via the module-level execute()
+rows = pookiedb.execute(
+    "SELECT name, email FROM authors WHERE is_active = ?",
+    [1],
+    alias="default",
+    fetch="all"    # "one" | "all" | None
+)
+# [{"name": "Grace", "email": "grace@ex.com"}, ...]
+
+# Single row
+row = pookiedb.execute(
+    "SELECT COUNT(*) AS cnt FROM posts",
+    fetch="one"
+)
+print(row["cnt"])   # 42
+```
+
+---
+
+## Multiple Databases
+
+```python
+# Register multiple connections
+pookiedb.connect("postgresql://user:pass@primary/app", alias="default")
+pookiedb.connect("postgresql://user:pass@replica/app", alias="replica")
+pookiedb.connect("sqlite:///cache.db",                alias="cache")
+
+# Assign a model to a specific database
+class EventLog(pookiedb.Model):
+    message = pookiedb.TextField()
+    class Meta:
+        db_alias = "cache"
+
+# EventLog.objects uses the "cache" connection automatically
+
+# Execute on a named connection
+pookiedb.execute("SELECT 1", alias="replica", fetch="one")
+
+# Transactions on a named connection
+from pookiedb.db.connection import transaction
+with transaction(alias="replica"):
+    ...
+```
+
+---
+
+## Model Registry
+
+PookieDB keeps a global registry of all Model subclasses.
+
+```python
+from pookiedb.db.registry import registry
+
+# All registered models
+for model in registry.all():
+    print(model.__name__, "→", model._meta.db_table)
+
+# Look up by class name
+Author = registry.get("Author")
+
+# Look up by fully-qualified name
+Author = registry.get("myapp.models.Author")
+
+# Count
+print(len(registry))   # 4
+```
+
+The registry is populated automatically when Python imports your model classes. Ensure your models are imported before calling migration or inspection functions.
+
+---
+
+## Utilities
+
+### slugify
+
+```python
+from pookiedb.utils import slugify
+
+slugify("Hello, World!")          # "hello-world"
+slugify("Grace Peter Mutiibwa")   # "grace-peter-mutiibwa"
+slugify("  Foo & Bar @ Baz  ")    # "foo-bar-baz"
+slugify("already-a-slug")         # "already-a-slug"
+```
+
+### camel_to_snake
+
+```python
+from pookiedb.utils import camel_to_snake
+
+camel_to_snake("CamelCase")       # "camel_case"
+camel_to_snake("myFieldName")     # "my_field_name"
+camel_to_snake("parseHTMLDoc")    # "parse_html_doc"
+```
+
+### Paginator / Page
+
+See [Pagination](#pagination).
+
+---
+
+## Exceptions
+
+All PookieDB exceptions inherit from `PookieError`:
+
+```
+PookieError
+├── DoesNotExist            → get() found 0 results
+├── MultipleObjectsReturned → get() found > 1 result
+├── ValidationError         → field validation failed
+│     .field                  → name of the failing field (or None)
+├── FieldError              → unknown field or lookup used
+├── MigrationError          → migration could not be applied
+└── ConnectionError         → cannot connect to the database
+```
+
+Every model class also has its own `DoesNotExist` and `MultipleObjectsReturned` subclasses:
+
+```python
+try:
+    post = Post.objects.get(slug="missing")
+except Post.DoesNotExist:
+    print("No such post")
+
+# Or catch the base class
+except pookiedb.DoesNotExist:
+    print("No such post")
+```
+
+---
+
+## Full Example — Blog Application
+
+This end-to-end example shows all major features working together.
+
+### 1. Project structure
+
+```
+blog/
+├── settings.py
+├── models.py
+└── migrations/
+```
+
+### 2. settings.py
+
+```python
+import pookiedb
+from blog.models import Author, Post, Tag
+
+pookiedb.connect("sqlite:///blog.sqlite3")
+```
+
+### 3. models.py
+
+```python
+import pookiedb
+
+
+class Tag(pookiedb.Model):
+    name = pookiedb.CharField(max_length=50, unique=True)
+    slug = pookiedb.SlugField(unique=True)
+
+    class Meta:
+        db_table = "tags"
+        ordering = ["name"]
+
+
+class Author(pookiedb.Model):
+    name      = pookiedb.CharField(max_length=100)
+    email     = pookiedb.EmailField(unique=True)
+    bio       = pookiedb.TextField(null=True, blank=True)
+    website   = pookiedb.URLField(null=True, blank=True)
+    is_active = pookiedb.BooleanField(default=True)
+    joined    = pookiedb.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "authors"
+        ordering = ["-joined"]
+
+
+class Post(pookiedb.Model):
+    title      = pookiedb.CharField(max_length=200)
+    slug       = pookiedb.SlugField(unique=True)
+    body       = pookiedb.TextField()
+    author     = pookiedb.ForeignKey(Author, on_delete=pookiedb.CASCADE)
+    tags       = pookiedb.ManyToManyField(Tag, related_name="posts")
+    published  = pookiedb.BooleanField(default=False)
+    view_count = pookiedb.IntegerField(default=0)
+    metadata   = pookiedb.JSONField(null=True)
+    created_at = pookiedb.DateTimeField(auto_now_add=True)
+    updated_at = pookiedb.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table        = "posts"
+        ordering        = ["-created_at"]
+        unique_together = [["author", "slug"]]
+```
+
+### 4. Run migrations
+
+```bash
+pookiedb makemigrations --settings settings.py
+pookiedb migrate        --settings settings.py
+```
+
+### 5. Use in code
+
+```python
+import pookiedb
+from settings import *    # triggers connect() and model imports
+
+# ── Create ────────────────────────────────────────────────────────────────────
+grace = Author.objects.create(
+    name="Grace Mutiibwa",
+    email="grace@blog.ug",
+    bio="Software engineer and ORM author.",
+)
+
+python_tag = Tag.objects.create(name="Python", slug="python")
+orm_tag    = Tag.objects.create(name="ORM",    slug="orm")
+
+post = Post.objects.create(
+    title="Introducing PookieDB",
+    slug="introducing-pookiedb",
+    body="PookieDB is a Django-style ORM for Python...",
+    author=grace,
+    published=True,
+    metadata={"featured": True, "cover_image": "intro.png"}
+)
+post.tags.set([python_tag, orm_tag])
+
+# ── Read ──────────────────────────────────────────────────────────────────────
+# All published posts, newest first
+published = Post.objects.filter(published=True).order_by("-created_at")
+
+# Filter by tag via raw FK query
+py_posts = Post.objects.filter(
+    id__in=pookiedb.execute(
+        "SELECT posts_id FROM posts_tags WHERE tags_id = ?",
+        [python_tag.id],
+        fetch="all"
+    ) and [r["posts_id"] for r in pookiedb.execute(
+        "SELECT posts_id FROM posts_tags WHERE tags_id = ?",
+        [python_tag.id], fetch="all"
+    ) or []]
+)
+
+# Access metadata
+print(post.metadata["featured"])   # True
+
+# Lazy FK access
+fetched = Post.objects.get(slug="introducing-pookiedb")
+print(fetched.author.name)          # "Grace Mutiibwa"
+
+# M2M tags
+print([t.name for t in fetched.tags.all()])  # ["Python", "ORM"]
+
+# ── Update ────────────────────────────────────────────────────────────────────
+post.view_count += 1
+post.save(update_fields=["view_count"])
+
+# Bulk update all of Grace's posts
+Post.objects.filter(author=grace).bulk_update(published=True)
+
+# ── Aggregate ─────────────────────────────────────────────────────────────────
+from pookiedb.queryset.queryset import Sum, Avg, Count
+
+stats = Post.objects.filter(published=True).aggregate(
+    total_views=Sum("view_count"),
+    post_count=Count("id"),
+    avg_views=Avg("view_count"),
+)
+print(f"Total views: {stats['total_views']}, Posts: {stats['post_count']}")
+
+# ── Paginate ──────────────────────────────────────────────────────────────────
+from pookiedb.utils import Paginator
+
+paginator = Paginator(Post.objects.filter(published=True), per_page=5)
+page1 = paginator.page(1)
+print(f"Showing {len(page1.object_list)} of {paginator.count} posts")
+print(f"Page 1 of {paginator.num_pages}, has_next={page1.has_next()}")
+
+# ── Q objects ─────────────────────────────────────────────────────────────────
+from pookiedb.queryset.queryset import Q
+
+# Featured OR high-traffic posts
+highlights = Post.objects.filter(
+    Q(metadata__isnull=False) | Q(view_count__gte=1000)
+)
+
+# ── Transactions ──────────────────────────────────────────────────────────────
+from pookiedb.db.connection import transaction
+
+with transaction():
+    new_author = Author.objects.create(name="Bob", email="bob@blog.ug")
+    Post.objects.create(
+        title="Bob's First Post",
+        slug="bob-first-post",
+        body="Hello world!",
+        author=new_author,
+    )
+    # Both author + post commit atomically
+
+# ── Delete ────────────────────────────────────────────────────────────────────
+# Delete single instance
+# grace.delete()
+
+# Delete matching rows
+Post.objects.filter(published=False).delete()
+
+# ── inspectdb: reverse-engineer existing tables ───────────────────────────────
+# pookiedb inspectdb --settings settings.py --output generated_models.py
+```
+
+---
+
+## Appendix — SQL Generated
+
+### CREATE TABLE (SQLite)
+
+```sql
+CREATE TABLE IF NOT EXISTS "posts" (
+    "id"         INTEGER PRIMARY KEY AUTOINCREMENT,
+    "title"      VARCHAR(200) NOT NULL,
+    "slug"       VARCHAR(100) NOT NULL UNIQUE,
+    "body"       TEXT NOT NULL,
+    "author_id"  INTEGER NOT NULL,
+    "published"  INTEGER NOT NULL DEFAULT 0,
+    "view_count" INTEGER NOT NULL DEFAULT 0,
+    "metadata"   TEXT,
+    "created_at" TEXT,
+    "updated_at" TEXT,
+    FOREIGN KEY ("author_id") REFERENCES "authors" ("id") ON DELETE CASCADE,
+    UNIQUE ("author_id", "slug")
+);
+```
+
+### CREATE TABLE (PostgreSQL)
+
+```sql
+CREATE TABLE IF NOT EXISTS "posts" (
+    "id"         SERIAL PRIMARY KEY,
+    "title"      VARCHAR(200) NOT NULL,
+    "slug"       VARCHAR(100) NOT NULL UNIQUE,
+    "body"       TEXT NOT NULL,
+    "author_id"  INTEGER NOT NULL,
+    "published"  BOOLEAN NOT NULL DEFAULT FALSE,
+    "view_count" INTEGER NOT NULL DEFAULT 0,
+    "metadata"   JSONB,
+    "created_at" TIMESTAMP WITH TIME ZONE,
+    "updated_at" TIMESTAMP WITH TIME ZONE,
+    FOREIGN KEY ("author_id") REFERENCES "authors" ("id") ON DELETE CASCADE,
+    UNIQUE ("author_id", "slug")
+);
+```
+
+### M2M join table
+
+```sql
+CREATE TABLE IF NOT EXISTS "posts_tags" (
+    "id"       INTEGER PRIMARY KEY AUTOINCREMENT,
+    "posts_id" INTEGER NOT NULL REFERENCES "posts" ("id") ON DELETE CASCADE,
+    "tags_id"  INTEGER NOT NULL REFERENCES "tags"  ("id") ON DELETE CASCADE,
+    UNIQUE ("posts_id", "tags_id")
+);
+```
+
+---
+
+*PookieDB — Built with ❤ by Grace Peter Mutiibwa*

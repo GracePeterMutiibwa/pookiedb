@@ -1,0 +1,238 @@
+from pookiedb.fields.core import Field, AutoField
+from pookiedb.fields.related import RelatedField, ManyToManyField, ForeignKey
+from pookiedb.queryset.queryset import QuerySet
+
+
+class Options:
+    """
+    Holds metadata for a model — equivalent to Django's _meta.
+    Populated by ModelBase from the inner Meta class.
+    """
+
+    def __init__(self, meta_class, model_name: str, module: str):
+        self.model_name = model_name.lower()
+        self.module = module
+
+        # From inner Meta class
+        self.db_table: str = getattr(meta_class, "db_table", None) or model_name.lower() + "s"
+        self.ordering: list = getattr(meta_class, "ordering", [])
+        self.unique_together: list = getattr(meta_class, "unique_together", [])
+        self.indexes: list = getattr(meta_class, "indexes", [])
+        self.abstract: bool = getattr(meta_class, "abstract", False)
+        self.db_alias: str = getattr(meta_class, "db_alias", "default")
+        self.verbose_name: str = getattr(meta_class, "verbose_name", model_name)
+        self.verbose_name_plural: str = getattr(meta_class, "verbose_name_plural", model_name + "s")
+
+        self.fields: list[Field] = []
+        self.m2m_fields: list[ManyToManyField] = []
+        self.pk: Field = None
+
+    def add_field(self, field: Field):
+        if isinstance(field, ManyToManyField):
+            self.m2m_fields.append(field)
+        else:
+            self.fields.append(field)
+            if field.primary_key:
+                self.pk = field
+
+    @property
+    def concrete_fields(self) -> list[Field]:
+        """Fields that map to actual DB columns."""
+        return [f for f in self.fields if not isinstance(f, ManyToManyField)]
+
+    @property
+    def fk_fields(self) -> list[ForeignKey]:
+        return [f for f in self.fields if isinstance(f, ForeignKey)]
+
+    def get_field(self, name: str) -> Field:
+        for f in self.fields + self.m2m_fields:
+            if f.name == name:
+                return f
+        raise KeyError(f"Field '{name}' not found on model.")
+
+    def __repr__(self):
+        return f"<Options: {self.db_table}>"
+
+
+class ModelBase(type):
+    """
+    Metaclass for all Pookie models.
+    - Collects Field definitions
+    - Builds Options (_meta)
+    - Attaches an 'objects' manager
+    - Registers the model in the global registry
+    """
+
+    def __new__(mcs, name, bases, namespace, **kwargs):
+        # Pass through for non-model classes (e.g. Model itself)
+        parents = [b for b in bases if isinstance(b, ModelBase)]
+        if not parents:
+            return super().__new__(mcs, name, bases, namespace)
+
+        module = namespace.get("__module__", "")
+
+        # Extract inner Meta class
+        meta_class = namespace.pop("Meta", None)
+        if meta_class is None:
+            # Check parent metas
+            for base in parents:
+                if hasattr(base, "_meta"):
+                    break
+            meta_class = type("Meta", (), {})
+
+        opts = Options(meta_class, name, module)
+
+        # Check if abstract
+        if opts.abstract:
+            cls = super().__new__(mcs, name, bases, namespace)
+            cls._meta = opts
+            return cls
+
+        # Collect fields from parent abstract models
+        inherited_fields = {}
+        for base in reversed(parents):
+            if hasattr(base, "_meta"):
+                for field in base._meta.fields + base._meta.m2m_fields:
+                    inherited_fields[field.name] = field
+
+        # Collect fields defined on this class
+        own_fields = {}
+        for attr_name, obj in list(namespace.items()):
+            if isinstance(obj, Field):
+                own_fields[attr_name] = obj
+
+        # Remove field attrs from namespace (we manage via __dict__ and descriptors)
+        for field_name in own_fields:
+            namespace.pop(field_name, None)
+
+        cls = super().__new__(mcs, name, bases, namespace)
+        cls._meta = opts
+
+        # Add auto primary key if none defined
+        all_fields = {**inherited_fields, **own_fields}
+        has_pk = any(f.primary_key for f in all_fields.values())
+        if not has_pk:
+            pk_field = AutoField(primary_key=True, editable=False)
+            pk_field.contribute_to_class(cls, "id")
+            opts.add_field(pk_field)
+
+        # Sort fields by creation order, then contribute
+        for field_name, field in sorted(all_fields.items(), key=lambda x: x[1]._creation_order):
+            field = field  # field object
+            field.contribute_to_class(cls, field_name)
+            opts.add_field(field)
+            # Set descriptor on class for FK fields
+            if isinstance(field, ForeignKey):
+                setattr(cls, field_name, field)
+            elif isinstance(field, ManyToManyField):
+                setattr(cls, field_name, field)
+
+        # Set DoesNotExist / MultipleObjectsReturned as class attrs
+        from pookiedb.exceptions import DoesNotExist, MultipleObjectsReturned
+        cls.DoesNotExist = type("DoesNotExist", (DoesNotExist,), {"__module__": module})
+        cls.MultipleObjectsReturned = type(
+            "MultipleObjectsReturned", (MultipleObjectsReturned,), {"__module__": module}
+        )
+
+        # Attach default manager
+        cls.objects = Manager(cls)
+
+        # Register in global registry
+        from pookiedb.db.registry import registry
+        registry.register(cls)
+
+        return cls
+
+
+class Manager:
+    """Default model manager — provides the entry point for all queries."""
+
+    def __init__(self, model):
+        self.model = model
+
+    def _qs(self) -> QuerySet:
+        return QuerySet(self.model, db_alias=self.model._meta.db_alias)
+
+    def all(self) -> QuerySet:
+        return self._qs()
+
+    def filter(self, *q_objs, **kwargs) -> QuerySet:
+        return self._qs().filter(*q_objs, **kwargs)
+
+    def exclude(self, *q_objs, **kwargs) -> QuerySet:
+        return self._qs().exclude(*q_objs, **kwargs)
+
+    def get(self, **kwargs):
+        return self._qs().get(**kwargs)
+
+    def first(self):
+        return self._qs().first()
+
+    def last(self):
+        return self._qs().last()
+
+    def count(self) -> int:
+        return self._qs().count()
+
+    def exists(self) -> bool:
+        return self._qs().exists()
+
+    def create(self, **kwargs):
+        obj = self.model(**kwargs)
+        obj.save()
+        return obj
+
+    def bulk_create(self, objs: list, batch_size: int = 500) -> list:
+        from pookiedb.db.connection import get_connection, execute
+        from pookiedb.fields.related import ForeignKey, ManyToManyField
+        pool = get_connection(self.model._meta.db_alias)
+        ph = "?" if pool.config.is_sqlite else "%s"
+        table = self.model._meta.db_table
+        fields = [f for f in self.model._meta.fields
+                  if not f.primary_key and not isinstance(f, ManyToManyField)]
+        cols = ", ".join(f'"{f.get_column_name()}"' for f in fields)
+
+        for i in range(0, len(objs), batch_size):
+            batch = objs[i : i + batch_size]
+            # Run pre_save hooks (auto_now_add etc.) for each object
+            for obj in batch:
+                for f in fields:
+                    if hasattr(f, "pre_save"):
+                        f.pre_save(obj, add=True)
+            placeholders = ", ".join(
+                f"({', '.join([ph] * len(fields))})" for _ in batch
+            )
+            params = []
+            for obj in batch:
+                for f in fields:
+                    if isinstance(f, ForeignKey):
+                        val = obj.__dict__.get(f.db_column)
+                    else:
+                        val = obj.__dict__.get(f.name, f.get_default())
+                    params.append(f.to_db(val))
+            sql = f'INSERT INTO "{table}" ({cols}) VALUES {placeholders}'
+            execute(sql, params, alias=self.model._meta.db_alias)
+        return objs
+
+    def get_or_create(self, defaults=None, **kwargs):
+        return self._qs().get_or_create(defaults=defaults, **kwargs)
+
+    def update_or_create(self, defaults=None, **kwargs):
+        return self._qs().update_or_create(defaults=defaults, **kwargs)
+
+    def order_by(self, *fields) -> QuerySet:
+        return self._qs().order_by(*fields)
+
+    def values(self, *fields) -> QuerySet:
+        return self._qs().values(*fields)
+
+    def values_list(self, *fields, flat=False) -> QuerySet:
+        return self._qs().values_list(*fields, flat=flat)
+
+    def aggregate(self, **kwargs) -> dict:
+        return self._qs().aggregate(**kwargs)
+
+    def raw(self, sql: str, params=None) -> list:
+        from pookiedb.db.connection import execute
+        rows = execute(sql, params or [], alias=self.model._meta.db_alias, fetch="all")
+        return [self.model._from_row(row) for row in (rows or [])]
