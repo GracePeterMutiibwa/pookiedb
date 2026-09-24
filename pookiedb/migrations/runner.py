@@ -184,6 +184,8 @@ class RawSQL(Operation):
         return f"Raw SQL: {self._forward[:60]}..."
 
     def __repr__(self):
+        if self._backward:
+            return f'RawSQL({self._forward!r}, {self._backward!r})'
         return f'RawSQL({self._forward!r})'
 
 
@@ -230,9 +232,14 @@ def _snapshot_model(model) -> dict:
         if isinstance(field, ForeignKey):
             entry["related_table"] = field.related_table
         fields[col] = entry
+    meta = model._meta
     return {
-        "table": model._meta.db_table,
+        "table": meta.db_table,
         "fields": fields,
+        "search": {
+            "fields": [f.get_column_name() for f in meta.search_fields],
+            "dimensions": meta.search_vector.dimensions if meta.search_vector else None,
+        },
     }
 
 
@@ -253,6 +260,30 @@ def _save_snapshot(migrations_dir: str, snapshot: dict):
 
 # ── makemigrations logic ──────────────────────────────────────────────────────
 
+def _search_changes(model, engine: str, old: dict, new: dict) -> list:
+    """Rebuild search indexes; on a dimensions change, reset the stored embeddings."""
+    from pookiedb.search.fields import HASH_FIELD, VECTOR_FIELD, INDEXED_FIELD
+    from pookiedb.search.sql import index_sql
+
+    meta = model._meta
+    table = meta.db_table
+    ops = [
+        RawSQL(f'DROP INDEX IF EXISTS "{table}_search_{suffix}";')
+        for suffix in ("fts", "vec", "pending")
+    ]
+    if old["dimensions"] and new["dimensions"] and old["dimensions"] != new["dimensions"]:
+        if engine == "postgresql":
+            ops.append(DropColumn(table, VECTOR_FIELD))
+            ops.append(AddColumn(table, VECTOR_FIELD, meta.search_vector.sql_definition(engine)))
+        reset = "FALSE" if engine == "postgresql" else "0"
+        ops.append(RawSQL(
+            f'UPDATE "{table}" SET "{HASH_FIELD}" = NULL, "{VECTOR_FIELD}" = NULL, '
+            f'"{INDEXED_FIELD}" = {reset};'
+        ))
+    ops += [RawSQL(create, drop) for create, drop in index_sql(model, engine)]
+    return ops
+
+
 def make_migrations(
     migrations_dir: str,
     name: str = None,
@@ -265,6 +296,7 @@ def make_migrations(
     from pookiedb.db.registry import registry
     from pookiedb.db.connection import get_connection
     from pookiedb.fields.related import ForeignKey, ManyToManyField
+    from pookiedb.search.sql import setup_sql, index_sql
 
     os.makedirs(migrations_dir, exist_ok=True)
     pool = get_connection(db_alias)
@@ -289,6 +321,7 @@ def make_migrations(
 
         if old is None:
             # New table
+            operations += [RawSQL(sql) for sql in setup_sql(model, engine)]
             columns = []
             constraints = []
             for field in model._meta.fields:
@@ -313,11 +346,16 @@ def make_migrations(
             for field in model._meta.fields:
                 if field.db_index and not field.primary_key and not field.unique:
                     operations.append(CreateIndex(table, field.get_column_name()))
+            operations += [RawSQL(create, drop) for create, drop in index_sql(model, engine)]
 
         else:
             # Diff columns
             old_fields = old.get("fields", {})
             new_fields = current.get("fields", {})
+            old_search = old.get("search", {"fields": [], "dimensions": None})
+            search_changed = old_search != current["search"]
+            if search_changed:
+                operations += [RawSQL(sql) for sql in setup_sql(model, engine)]
 
             for col, info in new_fields.items():
                 if col not in old_fields:
@@ -332,6 +370,9 @@ def make_migrations(
             for col in old_fields:
                 if col not in new_fields:
                     operations.append(DropColumn(table, col))
+
+            if search_changed:
+                operations += _search_changes(model, engine, old_search, current["search"])
 
     if not operations:
         return None

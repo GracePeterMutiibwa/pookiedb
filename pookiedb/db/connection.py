@@ -45,7 +45,11 @@ class DatabaseConfig:
         else:
             raise PookieConnectionError(f"Unsupported database scheme: {scheme}")
 
-        self.name = parsed.path.lstrip("/") or ":memory:"
+        if self.engine == "sqlite":
+            # sqlite:///relative.db → "relative.db", sqlite:////abs/path.db → "/abs/path.db"
+            self.name = parsed.path[1:] or ":memory:"
+        else:
+            self.name = parsed.path.lstrip("/") or ":memory:"
         self.host = parsed.hostname or "localhost"
         self.port = parsed.port or 5432
         self.user = parsed.username or ""

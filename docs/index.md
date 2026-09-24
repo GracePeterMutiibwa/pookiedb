@@ -1,6 +1,6 @@
 # PookieDB Documentation
 
-> A Django-style ORM for PostgreSQL and SQLite — with migrations, relationships, a chainable QuerySet API, and an interactive CLI.
+> A Django-style ORM for PostgreSQL and SQLite, with migrations, relationships, a chainable QuerySet API, and an interactive CLI.
 
 ---
 
@@ -13,21 +13,22 @@
 5. [Field Reference](#field-reference)
 6. [QuerySet API](#queryset-api)
 7. [Lookup Types](#lookup-types)
-8. [Q Objects — Complex Queries](#q-objects)
+8. [Q Objects: Complex Queries](#q-objects)
 9. [Relationships](#relationships)
 10. [Special Fields](#special-fields)
-11. [Validation](#validation)
-12. [Migrations](#migrations)
-13. [CLI Reference](#cli-reference)
-14. [Transactions](#transactions)
-15. [Aggregates](#aggregates)
-16. [Pagination](#pagination)
-17. [Raw SQL](#raw-sql)
-18. [Multiple Databases](#multiple-databases)
-19. [Model Registry](#model-registry)
-20. [Utilities](#utilities)
-21. [Exceptions](#exceptions)
-22. [Full Example - Blog Application](#full-example-blog-application)
+11. [Search](#search)
+12. [Validation](#validation)
+13. [Migrations](#migrations)
+14. [CLI Reference](#cli-reference)
+15. [Transactions](#transactions)
+16. [Aggregates](#aggregates)
+17. [Pagination](#pagination)
+18. [Raw SQL](#raw-sql)
+19. [Multiple Databases](#multiple-databases)
+20. [Model Registry](#model-registry)
+21. [Utilities](#utilities)
+22. [Exceptions](#exceptions)
+23. [Full Example - Blog Application](#full-example-blog-application)
 
 ---
 
@@ -36,12 +37,25 @@
 ```bash
 pip install pookiedb
 
-# PostgreSQL support ships by default (psycopg2-binary)
+# PostgreSQL support ships by default (psycopg2-binary),
+# and SQLite vector search by zvec
 # IPython shell support:
 pip install "pookiedb[shell]"
 ```
 
-**Requirements:** Python ≥ 3.10
+**Requirements:** Python ≥ 3.10 on a platform zvec ships for: Linux (x86_64 / ARM64, glibc 2.28+
+or musl), macOS on Apple Silicon, or Windows x64.
+
+**Hosting:** any Linux host from roughly 2019 onwards works (Ubuntu 20.04+, Debian 10+, RHEL 8+,
+Alpine, and the official `python` Docker images). Older systems fail to install, because zvec
+has no build for them:
+
+| Host                                          | Supported | What to do                           |
+| --------------------------------------------- | --------- | ------------------------------------ |
+| AWS Lambda, Python 3.10 / 3.11 runtimes       | No        | Use the Python 3.12+ runtime         |
+| Amazon Linux 2, CentOS 7, Ubuntu 18.04        | No        | Move to a newer OS or Docker image   |
+| Shared cPanel hosting on CloudLinux 7         | No        | Ask the host for CloudLinux 8+       |
+| Intel Macs                                    | No        | Develop in Docker or on Linux        |
 
 ---
 
@@ -81,8 +95,11 @@ PookieDB supports **SQLite** and **PostgreSQL**. Register a connection once at s
 ```python
 import pookiedb
 
-# SQLite file
+# SQLite file (relative path: three slashes)
 pookiedb.connect("sqlite:///mydb.sqlite3")
+
+# SQLite file (absolute path: four slashes)
+pookiedb.connect("sqlite:////var/data/mydb.sqlite3")
 
 # SQLite in-memory (testing)
 pookiedb.connect("sqlite://:memory:")
@@ -288,7 +305,7 @@ keywords = pookiedb.ArrayField(base_field=pookiedb.CharField(max_length=50))
 
 ## QuerySet API
 
-PookieDB's QuerySet is **lazy** — queries are only executed when results are consumed. Every method returns a new QuerySet, allowing unlimited chaining.
+PookieDB's QuerySet is **lazy**: queries are only executed when results are consumed. Every method returns a new QuerySet, allowing unlimited chaining.
 
 ### Accessing the manager
 
@@ -329,13 +346,13 @@ post = Post.objects.get(slug="my-post")
 first = Author.objects.order_by("id").first()   # None if empty
 last  = Author.objects.order_by("id").last()
 
-# get_or_create — returns (obj, created_bool)
+# get_or_create returns (obj, created_bool)
 author, created = Author.objects.get_or_create(
     email="grace@example.com",
     defaults={"name": "Grace"}
 )
 
-# update_or_create — returns (obj, created_bool)
+# update_or_create returns (obj, created_bool)
 author, created = Author.objects.update_or_create(
     email="grace@example.com",
     defaults={"name": "Grace Updated"}
@@ -388,6 +405,18 @@ Post.objects.filter(published=True).count()
 Post.objects.exists()                    # True / False (faster than count > 0)
 Post.objects.filter(author=grace).exists()
 ```
+
+Using a queryset as a condition runs the query once and keeps the rows, so looping over it
+afterwards doesn't query again:
+
+```python
+posts = Post.objects.filter(published=True)
+if posts:              # one query; rows are cached
+    for p in posts:    # no second query
+        ...
+```
+
+If you only need to know whether rows exist, use `.exists()`: it doesn't load them.
 
 ### Projection
 
@@ -507,7 +536,7 @@ Post.objects.exclude(Q(published=False) | Q(author__isnull=True))
 
 ## Relationships
 
-### ForeignKey — many-to-one
+### ForeignKey (many-to-one)
 
 ```python
 class Post(pookiedb.Model):
@@ -549,7 +578,16 @@ Post.objects.filter(author=grace)
 
 # Filter by FK id
 Post.objects.filter(author_id=grace.id)
+
+# Filter across the relation (any depth, any lookup)
+Post.objects.filter(author__name="Grace")
+Post.objects.filter(author__email__iendswith="@example.com")
+Comment.objects.filter(post__author__name="Grace")
 ```
+
+Filtering across a `ForeignKey` / `OneToOneField` works in `filter()`, `exclude()`, `Q` objects,
+`delete()` and `bulk_update()`. Filtering across a `ManyToManyField` (e.g. `tags__name`) isn't
+supported yet and raises `FieldError`.
 
 ### OneToOneField
 
@@ -599,7 +637,7 @@ all_tags = post.tags.all()
 post.tags.count()
 ```
 
-Adding the same tag twice is silently ignored — the join table has a `UNIQUE` constraint on `(post_id, tag_id)`.
+Adding the same tag twice is silently ignored, because the join table has a `UNIQUE` constraint on `(post_id, tag_id)`.
 
 ---
 
@@ -640,6 +678,136 @@ article = Article.objects.create(keywords=["orm", "python", "sqlite"])
 fetched  = Article.objects.get(pk=article.id)
 print(fetched.keywords)   # ["orm", "python", "sqlite"]
 ```
+
+---
+
+## Search
+
+Mark text fields as `searchable=True` and call `.search()`. PookieDB handles the rest:
+full-text ranking, embeddings, vector storage, snippets and fallbacks.
+
+```python
+class Article(pookiedb.Model):
+    title = pookiedb.CharField(max_length=200, searchable=True)
+    body  = pookiedb.TextField(searchable=True)
+    published = pookiedb.BooleanField(default=False)
+
+for article in Article.objects.filter(published=True).search("refund policy")[:5]:
+    print(article.title, article.search_score, article.search_snippet)
+```
+
+`.search()` chains like any QuerySet method: `filter()` / `exclude()` (including across relations) narrow what is searched, and slicing picks how many results you get (20 when unsliced). Each result is a normal model instance with two extra attributes:
+
+| Attribute        | Description                                                    |
+| ---------------- | -------------------------------------------------------------- |
+| `search_score`   | Relevance from 0 to 1, higher is better                        |
+| `search_snippet` | ~45 words around the match, matches in `**bold**`, `…` where cut |
+
+### Keyword and semantic search
+
+Without embeddings, `.search()` is keyword search. Register an embedding callback to add
+semantic search (matching meaning, so "money back" finds "refund"):
+
+```python
+pookiedb.connect("postgresql://...")
+pookiedb.embeddings(my_embed, dimensions=1536)   # before your models are defined
+
+from myapp.models import Article
+```
+
+The callback has a strict contract:
+
+```python
+def my_embed(texts: list[str]) -> list[list[float]]:
+    ...  # one vector per text, same order, each exactly `dimensions` floats
+```
+
+Any exception, `None`, or wrongly shaped result raises `pookiedb.EmbeddingError` (the original
+exception is on `.cause`). PookieDB never retries or silently continues:
+
+- **On save**, embedding happens before the row is written, so a failed call writes nothing.
+- **On search**, the error reaches you. Fall back yourself if you want to:
+
+```python
+try:
+    results = Article.objects.search(q)[:5]
+except pookiedb.EmbeddingError:
+    results = Article.objects.search(q, mode="keyword")[:5]
+```
+
+For any OpenAI-compatible endpoint (OpenAI, OpenRouter, Ollama, vLLM, LM Studio…) there is a
+ready-made callback that uses only the standard library:
+
+```python
+pookiedb.embeddings(
+    pookiedb.openai_compatible(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.environ["OPENROUTER_API_KEY"],
+        model="openai/text-embedding-3-small",
+    ),
+    dimensions=1536,
+)
+```
+
+`pookiedb.embeddings()` options:
+
+| Option           | Default | Description                                                          |
+| ---------------- | ------- | -------------------------------------------------------------------- |
+| `dimensions`     | none    | Vector size of your model (required; every vector is checked)        |
+| `batch_size`     | `100`   | Max texts per callback call (`bulk_create` embeds in batches)        |
+| `min_similarity` | `0.3`   | Semantic cutoff, so unrelated queries return nothing. Model-specific |
+
+### Search modes
+
+| Mode       | What it does                                                                                |
+| ---------- | ------------------------------------------------------------------------------------------- |
+| `keyword`  | PostgreSQL full-text search (stemming, `websearch` syntax), with a plain contains match when it finds nothing. SQLite uses the contains match |
+| `semantic` | Cosine similarity between the query's embedding and each row's                              |
+| `hybrid`   | Both, merged with reciprocal rank fusion. The default when embeddings are configured        |
+
+```python
+Article.objects.search("refund", mode="keyword")
+Article.objects.search("money back", mode="semantic", min_similarity=0.5)
+Article.objects.search("refund", fields=["title"])   # only some searchable fields
+```
+
+### How it's stored
+
+`searchable=True` adds hidden columns to the table (`_search_embedding`, `_search_hash`,
+`_search_indexed`); `create_table()` and `makemigrations` handle them. Embeddings are only
+recomputed when the searchable text changes, and they are never loaded by normal queries.
+
+| Engine     | Vectors                                                                 | Keyword search                 |
+| ---------- | ----------------------------------------------------------------------- | ------------------------------ |
+| PostgreSQL | pgvector column with an HNSW index (`halfvec` above 2,000 dimensions; max 4,000) | GIN full-text index |
+| SQLite     | float32 BLOB column, searched with [zvec](https://github.com/alibaba/zvec) | contains match |
+
+**PostgreSQL needs pgvector for semantic search** (keyword-only search doesn't). PookieDB
+enables it for you (`CREATE EXTENSION vector`), but it has to be installed on the server:
+hosted PostgreSQL (Supabase, Neon, RDS, Cloud SQL, Azure) includes it; self-hosted servers need
+e.g. `apt install postgresql-<version>-pgvector` or the `pgvector/pgvector` Docker image. If it's
+missing, or your database user isn't allowed to enable it, `create_table()` / `migrate` stop
+with a message saying which, and what to do.
+
+On SQLite, the table is the source of truth and zvec keeps a copy in `<db file>.zvec/`. When
+zvec can't give a current answer (another process is writing to it, in-memory database),
+PookieDB searches the stored vectors exactly instead. zvec allows one writing
+process at a time, so it suits single-process apps best.
+
+### Keeping embeddings current
+
+Rows changed through `bulk_update()` or raw SQL, rows that existed before a field became
+searchable, and all rows after a `dimensions` change have no current embedding. They still
+show up in keyword search; `pookiedb embed` brings them back into semantic search:
+
+```bash
+pookiedb embed --settings settings.py            # all searchable models
+pookiedb embed --model Article --settings settings.py
+pookiedb embed --reindex --settings settings.py  # also rebuild the zvec index (SQLite)
+```
+
+Changing `dimensions` is a schema change: `makemigrations` generates a migration that resizes
+the vector column and clears the old embeddings, then `pookiedb embed` re-embeds.
 
 ---
 
@@ -853,11 +1021,11 @@ pookiedb init
 
 The wizard walks you through 5 steps:
 
-1. **Project name** — directory and Python package name
-2. **Database engine** — SQLite or PostgreSQL
-3. **Connection details** — database name, host, port, user, password
-4. **First model** — optional model class with field definitions
-5. **Author info** — name, email, version for pyproject.toml
+1. **Project name**: directory and Python package name
+2. **Database engine**: SQLite or PostgreSQL
+3. **Connection details**: database name, host, port, user, password
+4. **First model**: optional model class with field definitions
+5. **Author info**: name, email, version for pyproject.toml
 
 Output (example for a `blog` project):
 
@@ -919,6 +1087,16 @@ Options:
   -d, --migrations-dir DIR  Migration directory (default: migrations)
   --db TEXT                 DB alias (default: default)
   -s, --settings PATH       Settings module to load
+```
+
+### pookiedb embed
+
+Embed rows of searchable models that have no current embedding (see [Search](#search)).
+
+```bash
+pookiedb embed --settings settings.py
+pookiedb embed --model Article --settings settings.py
+pookiedb embed --reindex --settings settings.py   # also rebuild the zvec index (SQLite)
 ```
 
 ### pookiedb shell
@@ -998,7 +1176,7 @@ try:
         post = Post.objects.create(...)  # never reached
 except ValueError:
     pass
-# author was rolled back — not in the database
+# author was rolled back, so it's not in the database
 
 # Named connection
 with transaction(alias="secondary"):
@@ -1079,7 +1257,7 @@ def post_list(request):
 When the QuerySet API isn't enough, drop down to raw SQL.
 
 ```python
-# Via manager — returns model instances
+# Via manager: returns model instances
 results = Author.objects.raw(
     "SELECT * FROM authors WHERE name ILIKE %s",
     ["%grace%"]
@@ -1203,6 +1381,8 @@ PookieError
 ├── MultipleObjectsReturned → get() found > 1 result
 ├── ValidationError         → field validation failed
 │     .field                  → name of the failing field (or None)
+├── EmbeddingError          → embedding callback failed or broke its contract
+│     .cause                  → the original exception (or None)
 ├── FieldError              → unknown field or lookup used, invalid primary key
 │                               definition, or an attempt to set a primary key
 ├── MigrationError          → migration could not be applied
@@ -1410,7 +1590,7 @@ Post.objects.filter(published=False).delete()
 
 ---
 
-## Appendix — SQL Generated
+## Appendix: SQL Generated
 
 ### CREATE TABLE (SQLite)
 

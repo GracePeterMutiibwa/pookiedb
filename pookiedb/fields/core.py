@@ -28,6 +28,7 @@ class Field:
         help_text: str = "",
         choices: list = None,
         verbose_name: str = None,
+        searchable: bool = False,
     ):
         self.null = null
         self.blank = blank
@@ -40,6 +41,7 @@ class Field:
         self.help_text = help_text
         self.choices = choices or []
         self.verbose_name = verbose_name
+        self.searchable = searchable
 
         # Set by ModelBase metaclass
         self.name: str = ""

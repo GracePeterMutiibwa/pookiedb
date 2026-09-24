@@ -3,6 +3,7 @@ import copy
 from typing import Any, Iterator, Optional, TYPE_CHECKING
 
 from pookiedb.exceptions import DoesNotExist, MultipleObjectsReturned, FieldError
+from pookiedb.fields.related import ForeignKey
 
 if TYPE_CHECKING:
     pass
@@ -28,6 +29,8 @@ LOOKUP_MAP = {
 }
 
 WILDCARD_LOOKUPS = {"contains", "icontains", "startswith", "istartswith", "endswith", "iendswith"}
+
+SEARCH_MODES = ("keyword", "semantic", "hybrid")
 
 
 def _wrap_wildcard(lookup: str, value: Any) -> Any:
@@ -82,7 +85,7 @@ class QuerySet:
     """
     A lazy, chainable query interface for a Pookie model.
 
-    Methods return a new QuerySet (immutable chain) — queries are
+    Methods return a new QuerySet (immutable chain); queries are
     only executed when results are actually needed (iteration, len, etc.).
     """
 
@@ -99,6 +102,7 @@ class QuerySet:
         self._evaluated = False
         self._fields: Optional[list] = None  # for values() / values_list()
         self._values_mode: Optional[str] = None  # "dict" | "tuple" | "flat"
+        self._search: Optional[dict] = None  # set by search()
 
     def _clone(self) -> "QuerySet":
         qs = QuerySet(self.model, self.db_alias)
@@ -110,6 +114,7 @@ class QuerySet:
         qs._select_related = copy.copy(self._select_related)
         qs._fields = copy.copy(self._fields)
         qs._values_mode = self._values_mode
+        qs._search = self._search
         return qs
 
     # ── Filtering ────────────────────────────────────────────────────────────
@@ -136,6 +141,7 @@ class QuerySet:
     # ── Ordering ─────────────────────────────────────────────────────────────
 
     def order_by(self, *fields) -> "QuerySet":
+        self._reject_search("order_by()")
         qs = self._clone()
         qs._order_by = list(fields)
         return qs
@@ -173,16 +179,64 @@ class QuerySet:
     # ── Projection ───────────────────────────────────────────────────────────
 
     def values(self, *fields) -> "QuerySet":
+        self._reject_search("values()")
         qs = self._clone()
         qs._fields = list(fields) or None
         qs._values_mode = "dict"
         return qs
 
     def values_list(self, *fields, flat: bool = False) -> "QuerySet":
+        self._reject_search("values_list()")
         qs = self._clone()
         qs._fields = list(fields) or None
         qs._values_mode = "flat" if flat else "tuple"
         return qs
+
+    # ── Search ───────────────────────────────────────────────────────────────
+
+    def search(
+        self,
+        query: str,
+        *,
+        mode: str = None,
+        fields: list = None,
+        min_similarity: float = None,
+    ) -> "QuerySet":
+        """
+        Rank this queryset's rows against `query`. Results are model instances with
+        `search_score` (0–1, higher is better) and `search_snippet` attached.
+
+        mode: "keyword", "semantic" or "hybrid". Defaults to hybrid when embeddings
+              are configured, otherwise keyword.
+        fields: limit the search to some of the model's searchable fields.
+        min_similarity: semantic cutoff; defaults to pookie.embeddings(min_similarity=...).
+
+        Usage:
+            Post.objects.filter(published=True).search("django migrations")[:5]
+        """
+        if mode is not None and mode not in SEARCH_MODES:
+            raise ValueError(f"mode must be one of {SEARCH_MODES}, got {mode!r}.")
+        if self._order_by:
+            raise FieldError("search() orders results by relevance; remove order_by().")
+        if self._values_mode:
+            raise FieldError("search() returns model instances; remove values()/values_list().")
+        if not self.model._meta.search_fields:
+            raise FieldError(
+                f"{self.model.__name__} has no searchable fields. "
+                f"Add searchable=True to a CharField or TextField."
+            )
+        qs = self._clone()
+        qs._search = {
+            "query": query,
+            "mode": mode,
+            "fields": fields,
+            "min_similarity": min_similarity,
+        }
+        return qs
+
+    def _reject_search(self, what: str):
+        if self._search is not None:
+            raise FieldError(f"{what} can't be combined with search().")
 
     # ── Single object retrieval ──────────────────────────────────────────────
 
@@ -251,6 +305,8 @@ class QuerySet:
     # ── Aggregates ───────────────────────────────────────────────────────────
 
     def count(self) -> int:
+        if self._search is not None:
+            return len(self)
         sql, params = self._build_sql(select_override="COUNT(*) as cnt")
         row = self._execute(sql, params, fetch="one")
         return row["cnt"] if row else 0
@@ -270,6 +326,7 @@ class QuerySet:
         return dict(row) if row else {}
 
     def delete(self) -> int:
+        self._reject_search("delete()")
         table = self.model._meta.db_table
         where_sql, params = self._build_where()
         sql = f'DELETE FROM "{table}"'
@@ -280,6 +337,7 @@ class QuerySet:
         return len(params)
 
     def bulk_update(self, **kwargs) -> int:
+        self._reject_search("bulk_update()")
         table = self.model._meta.db_table
         pool = self._get_pool()
         ph = "?" if pool.config.is_sqlite else "%s"
@@ -295,6 +353,17 @@ class QuerySet:
             col = field.get_column_name()
             set_parts.append(f'"{col}" = {ph}')
             set_params.append(field.to_db(v))
+
+        # Searchable text changed without re-embedding: clear the stale vectors.
+        # `pookiedb embed` re-embeds them.
+        meta = self.model._meta
+        if meta.search_vector is not None and any(
+            self._resolve_field(k) in meta.search_fields for k in kwargs
+        ):
+            from pookiedb.search.fields import HASH_FIELD, VECTOR_FIELD, INDEXED_FIELD
+            set_parts += [f'"{HASH_FIELD}" = NULL', f'"{VECTOR_FIELD}" = NULL', f'"{INDEXED_FIELD}" = {ph}']
+            set_params.append(False)
+
         where_sql, where_params = self._build_where()
         sql = f'UPDATE "{table}" SET {", ".join(set_parts)}'
         if where_sql:
@@ -316,7 +385,10 @@ class QuerySet:
         return len(self._result_cache)
 
     def __bool__(self) -> bool:
-        return self.exists()
+        # Evaluate once and keep the rows, so `if qs:` followed by `for x in qs:` is one query
+        if self._result_cache is None:
+            self._result_cache = list(self._fetch())
+        return bool(self._result_cache)
 
     def __repr__(self):
         results = list(self[:5])
@@ -363,6 +435,21 @@ class QuerySet:
             col = f'"{table}"."{field_name}"'
             field = None
 
+        # Follow a relation: author__name="x" → author_id IN (SELECT id FROM authors WHERE name = x)
+        if len(parts) > 1 and parts[1] not in LOOKUP_MAP:
+            if not isinstance(field, ForeignKey):
+                raise FieldError(f"Unknown lookup '{parts[1]}' on '{field_name}'.")
+            related = field.related_model
+            rel_table = related._meta.db_table
+            rel_pk = related._meta.pk.get_column_name()
+            sub_sql, sub_params = QuerySet(related, self.db_alias)._parse_lookup(
+                "__".join(parts[1:]), value, ph
+            )
+            return (
+                f'{col} IN (SELECT "{rel_table}"."{rel_pk}" FROM "{rel_table}" WHERE {sub_sql})',
+                sub_params,
+            )
+
         # If value is a model instance (e.g. filter(author=some_obj)), extract its pk
         if hasattr(value, '_meta'):
             value = getattr(value, value._meta.pk.name)
@@ -392,7 +479,7 @@ class QuerySet:
         if lookup in WILDCARD_LOOKUPS:
             value = _wrap_wildcard(lookup, value)
 
-        # SQLite doesn't support ILIKE — use LIKE with LOWER()
+        # SQLite doesn't support ILIKE, so use LIKE with LOWER()
         pool = self._get_pool()
         is_sqlite = pool.config.is_sqlite
         if is_sqlite and lookup in ("iexact", "icontains", "istartswith", "iendswith"):
@@ -462,7 +549,7 @@ class QuerySet:
                     resolved.append(f'"{table}"."{f}"')
             select_sql = ", ".join(resolved)
         else:
-            select_sql = f'"{table}".*'
+            select_sql = self._default_select(include_hidden=not self._values_mode)
 
         sql = f'SELECT {select_sql} FROM "{table}"'
 
@@ -489,11 +576,27 @@ class QuerySet:
 
         return sql, params
 
+    def _default_select(self, include_hidden: bool = True) -> str:
+        """All columns, minus the (large) embedding; minus all search columns for values()."""
+        meta = self.model._meta
+        table = meta.db_table
+        if meta.search_vector is None:
+            return f'"{table}".*'
+        from pookiedb.search.fields import SEARCH_COLUMNS, VECTOR_FIELD
+        skip = {VECTOR_FIELD} if include_hidden else set(SEARCH_COLUMNS)
+        return ", ".join(
+            f'"{table}"."{f.get_column_name()}"' for f in meta.fields if f.name not in skip
+        )
+
     def _execute(self, sql: str, params: list, fetch: str = "all"):
         from pookiedb.db.connection import execute
         return execute(sql, params, alias=self.db_alias, fetch=fetch)
 
     def _fetch(self):
+        if self._search is not None:
+            from pookiedb.search.engine import run_search
+            yield from run_search(self)
+            return
         sql, params = self._build_sql()
         rows = self._execute(sql, params, fetch="all") or []
         for row in rows:

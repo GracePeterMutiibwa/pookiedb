@@ -6,7 +6,7 @@ from pookiedb.exceptions import FieldError
 
 class Options:
     """
-    Holds metadata for a model — equivalent to Django's _meta.
+    Holds metadata for a model, equivalent to Django's _meta.
     Populated by ModelBase from the inner Meta class.
     """
 
@@ -27,6 +27,10 @@ class Options:
         self.fields: list[Field] = []
         self.m2m_fields: list[ManyToManyField] = []
         self.pk: Field = None
+
+        # Set by search.fields.contribute_search_fields
+        self.search_fields: list[Field] = []
+        self.search_vector: Field = None
 
     def add_field(self, field: Field):
         if isinstance(field, ManyToManyField):
@@ -164,6 +168,9 @@ class ModelBase(type):
             elif isinstance(field, ManyToManyField):
                 setattr(cls, field_name, field)
 
+        from pookiedb.search.fields import contribute_search_fields
+        contribute_search_fields(cls)
+
         # Set DoesNotExist / MultipleObjectsReturned as class attrs
         from pookiedb.exceptions import DoesNotExist, MultipleObjectsReturned
         cls.DoesNotExist = type("DoesNotExist", (DoesNotExist,), {"__module__": module})
@@ -182,7 +189,7 @@ class ModelBase(type):
 
 
 class Manager:
-    """Default model manager — provides the entry point for all queries."""
+    """Default model manager: the entry point for all queries."""
 
     def __init__(self, model):
         self.model = model
@@ -222,6 +229,7 @@ class Manager:
     def bulk_create(self, objs: list, batch_size: int = 500) -> list:
         from pookiedb.db.connection import get_connection, execute
         from pookiedb.fields.related import ForeignKey, ManyToManyField
+        from pookiedb.search.fields import prepare_for_write
         pool = get_connection(self.model._meta.db_alias)
         ph = "?" if pool.config.is_sqlite else "%s"
         table = self.model._meta.db_table
@@ -237,6 +245,8 @@ class Manager:
                 for f in fields:
                     if hasattr(f, "pre_save"):
                         f.pre_save(obj, add=True)
+            # One batched embedding call for the whole batch (raises before anything is written)
+            prepare_for_write(self.model, batch)
             placeholders = ", ".join(
                 f"({', '.join([ph] * len(fields))})" for _ in batch
             )
@@ -260,6 +270,9 @@ class Manager:
 
     def order_by(self, *fields) -> QuerySet:
         return self._qs().order_by(*fields)
+
+    def search(self, query: str, **kwargs) -> QuerySet:
+        return self._qs().search(query, **kwargs)
 
     def values(self, *fields) -> QuerySet:
         return self._qs().values(*fields)

@@ -249,27 +249,27 @@ class WizardScreen(Screen):
     STEPS = [
         # (title, subtitle, fields)
         (
-            "Step 1 / 5 — Project Name",
+            "Step 1 / 5: Project Name",
             "Give your project a name. This becomes the root folder.",
             "project_name",
         ),
         (
-            "Step 2 / 5 — Database Engine",
+            "Step 2 / 5: Database Engine",
             "Which database will you use?",
             "db_engine",
         ),
         (
-            "Step 3 / 5 — Database Connection",
+            "Step 3 / 5: Database Connection",
             "Enter connection details for your database.",
             "db_details",
         ),
         (
-            "Step 4 / 5 — First Model",
+            "Step 4 / 5: First Model",
             "Name your first model class (e.g. User, Product, Post). Leave blank to skip.",
             "first_model",
         ),
         (
-            "Step 5 / 5 — Author / Package Info",
+            "Step 5 / 5: Author / Package Info",
             "Optional metadata written into your pyproject.toml.",
             "author_info",
         ),
@@ -506,7 +506,7 @@ class DoneScreen(Screen):
 
 class PookieInitApp(App):
     CSS = POOKIE_CSS
-    TITLE = "Pookie ORM — Project Wizard"
+    TITLE = "Pookie ORM: Project Wizard"
 
     def on_mount(self):
         self.push_screen(SplashScreen())
@@ -589,7 +589,7 @@ def scaffold(answers: dict):
     settings_src = textwrap.dedent(
         f"""\
         \"\"\"
-        {proj} — Pookie ORM settings
+        {proj}: Pookie ORM settings
         Author: {author}
         \"\"\"
         import pookiedb

@@ -10,8 +10,11 @@ A Django-style Python ORM for **PostgreSQL** and **SQLite** - with auto migratio
 
 ```bash
 pip install pookiedb
-# PostgreSQL support is included via psycopg2-binary
+# PostgreSQL support is included via psycopg2-binary, SQLite vector search via zvec
 ```
+
+Needs Python 3.10+ on Linux (glibc 2.28+ or musl, so any host from roughly 2019 on), macOS on Apple Silicon, or Windows x64.
+On AWS Lambda, use a Python 3.12+ runtime. See [Installation](https://pookiedb.readthedocs.io/en/latest/#installation) for the hosts that aren't supported.
 
 ---
 
@@ -22,7 +25,7 @@ pip install pookiedb
 ```python
 import pookiedb
 
-# SQLite
+# SQLite (relative path; use four slashes for an absolute one: sqlite:////var/data/mydb.sqlite3)
 pookiedb.connect("sqlite:///mydb.sqlite3")
 
 # PostgreSQL
@@ -106,7 +109,7 @@ drafts = Post.objects.exclude(published=True)
 from pookiedb.queryset.queryset import Q
 
 results = Post.objects.filter(
-    Q(title__icontains="python") | Q(tags__name="python")
+    Q(title__icontains="python") | Q(author__name="Alice")
 )
 
 # get_or_create / update_or_create
@@ -172,6 +175,43 @@ class UserProfile(pookiedb.Model):
     user = pookiedb.OneToOneField("User", on_delete=pookiedb.CASCADE)
     avatar_url = pookiedb.URLField(null=True)
 ```
+
+---
+
+## Search
+
+Mark text fields as searchable and call `.search()`:
+
+```python
+class Article(pookiedb.Model):
+    title = pookiedb.CharField(max_length=200, searchable=True)
+    body = pookiedb.TextField(searchable=True)
+
+for a in Article.objects.filter(author__name="Alice").search("refund policy")[:5]:
+    print(a.title, a.search_score, a.search_snippet)   # score 0–1, snippet with **bold** matches
+```
+
+That's keyword search. Register an embedding callback (before defining models) to add semantic
+search. `.search()` then combines both:
+
+```python
+def my_embed(texts: list[str]) -> list[list[float]]:
+    ...  # one vector per text, each exactly `dimensions` floats
+
+pookiedb.embeddings(my_embed, dimensions=1536)
+
+# or any OpenAI-compatible endpoint (OpenAI, OpenRouter, Ollama, vLLM, ...)
+pookiedb.embeddings(
+    pookiedb.openai_compatible("https://openrouter.ai/api/v1", api_key=KEY, model="openai/text-embedding-3-small"),
+    dimensions=1536,
+)
+```
+
+If the callback fails or returns the wrong shape, `pookiedb.EmbeddingError` is raised and nothing is written.
+Vectors live in pgvector on PostgreSQL (the extension must be installed on the server; hosted
+Postgres like Supabase or Neon includes it), and in the table on SQLite (searched with
+[zvec](https://github.com/alibaba/zvec)).
+See the [search docs](https://pookiedb.readthedocs.io/en/latest/#search) for modes, options and `pookiedb embed`.
 
 ---
 
@@ -318,6 +358,7 @@ Commands:
   shell            Interactive Python REPL with pookiedb pre-imported
   dbshell          Open raw psql / sqlite3 shell
   inspectdb        Introspect an existing DB and generate model code
+  embed            Embed rows of searchable models that have no current embedding
 ```
 
 ### Shell

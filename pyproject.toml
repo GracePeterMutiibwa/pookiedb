@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pookiedb"
-version = "0.2.0"
+version = "0.3.0"
 description = "A Django-style ORM for PostgreSQL and SQLite with migrations, relationships, and a friendly API."
 readme = "README.md"
 license = { text = "MIT" }
@@ -30,6 +30,7 @@ dependencies = [
     "rich>=13.0",
     "python-dateutil>=2.8",
     "textual>=0.50",
+    "zvec>=0.7",
 ]
 
 [project.optional-dependencies]

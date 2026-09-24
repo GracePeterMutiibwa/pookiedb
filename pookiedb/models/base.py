@@ -5,6 +5,7 @@ from pookiedb.models.metaclass import ModelBase, Options
 from pookiedb.exceptions import ValidationError, FieldError
 from pookiedb.fields.core import AutoField
 from pookiedb.fields.related import ManyToManyField, ForeignKey
+from pookiedb.search.fields import prepare_for_write, SEARCH_COLUMNS
 
 
 class ModelState:
@@ -140,6 +141,14 @@ class Model(metaclass=ModelBase):
         # Run validation
         self.full_clean()
 
+        # Embed changed searchable text before writing, so a failed embedding writes nothing
+        search_fields = []
+        if meta.search_vector is not None and (
+            not update_fields or any(f.name in update_fields for f in meta.search_fields)
+        ):
+            if prepare_for_write(type(self), [self]):
+                search_fields = [meta.get_field(n) for n in SEARCH_COLUMNS]
+
         if is_adding:
             # INSERT
             fields_to_insert = [
@@ -149,7 +158,8 @@ class Model(metaclass=ModelBase):
             ]
             if update_fields:
                 fields_to_insert = [
-                    f for f in fields_to_insert if f.name in update_fields or f.primary_key
+                    f for f in fields_to_insert
+                    if f.name in update_fields or f.primary_key or f in search_fields
                 ]
 
             cols = ", ".join(f'"{f.get_column_name()}"' for f in fields_to_insert)
@@ -192,6 +202,7 @@ class Model(metaclass=ModelBase):
             ]
             if update_fields:
                 fields_to_update = [f for f in fields_to_update if f.name in update_fields]
+            fields_to_update += search_fields
 
             if not fields_to_update:
                 return
@@ -233,7 +244,7 @@ class Model(metaclass=ModelBase):
         for field in self._meta.fields:
             if isinstance(field, ManyToManyField):
                 continue
-            # Skip auto fields (auto_now, auto_now_add) — they set themselves on save
+            # Skip auto fields (auto_now, auto_now_add): they set themselves on save
             if hasattr(field, 'auto_now') and (field.auto_now or field.auto_now_add):
                 continue
             # FK values are stored under db_column (e.g. "author_id"), not field.name
@@ -272,7 +283,7 @@ class Model(metaclass=ModelBase):
             if isinstance(field, ForeignKey):
                 constraints.append(f"    {field.sql_constraint(engine)}")
 
-        # unique_together constraints — resolve field names to actual DB column names
+        # unique_together constraints: resolve field names to actual DB column names
         for combo in (meta.unique_together or []):
             resolved = []
             for c in combo:
@@ -322,8 +333,11 @@ class Model(metaclass=ModelBase):
     def create_table(cls, engine: str = None):
         """Create this model's table in the database."""
         from pookiedb.db.connection import execute, get_connection
+        from pookiedb.search.sql import setup_sql, index_sql
         pool = get_connection(cls._meta.db_alias)
         eng = engine or pool.config.engine
+        for setup in setup_sql(cls, eng):
+            execute(setup, alias=cls._meta.db_alias)
         sql = cls._schema_sql(eng)
         execute(sql, alias=cls._meta.db_alias)
 
@@ -340,3 +354,7 @@ class Model(metaclass=ModelBase):
                     f'ON "{cls._meta.db_table}" ("{field.get_column_name()}");'
                 )
                 execute(idx_sql, alias=cls._meta.db_alias)
+
+        # Search indexes (full-text + vector)
+        for create, _ in index_sql(cls, eng):
+            execute(create, alias=cls._meta.db_alias)

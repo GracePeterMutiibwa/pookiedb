@@ -1,5 +1,5 @@
 """
-PookieDB — Complete test suite (SQLite in-memory)
+PookieDB: complete test suite (SQLite in-memory)
 Covers: all field types, QuerySet API, relationships, migrations,
         scaffold logic, utilities, validators, aggregates, CLI helpers.
 Run with: pytest tests/
@@ -745,7 +745,7 @@ def test_transaction_rollback_on_exception(db):
             raise ValueError("forced rollback")
     except ValueError:
         pass
-    # No unhandled exception — the with block swallowed it after rollback
+    # No unhandled exception: the with block swallowed it after rollback
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -27,6 +27,14 @@ class MigrationError(PookieError):
     """Raised when a migration operation fails."""
 
 
+class EmbeddingError(PookieError):
+    """Raised when the embedding callback fails or breaks its contract."""
+
+    def __init__(self, message, cause=None):
+        self.cause = cause
+        super().__init__(message)
+
+
 class ConnectionError(PookieError):
     """Raised when a database connection cannot be established."""
 

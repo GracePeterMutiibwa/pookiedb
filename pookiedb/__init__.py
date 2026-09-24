@@ -14,9 +14,10 @@ from pookiedb.fields.related import (
 from pookiedb.fields.special import JSONField, ArrayField
 from pookiedb.db.connection import connect, get_connection, transaction, execute
 from pookiedb.db.registry import registry
+from pookiedb.search import embeddings, openai_compatible
 from pookiedb.exceptions import (
     PookieError, DoesNotExist, MultipleObjectsReturned,
-    ValidationError, FieldError, MigrationError,
+    ValidationError, FieldError, MigrationError, EmbeddingError,
 )
 
 try:
@@ -36,6 +37,7 @@ __all__ = [
     "CASCADE", "SET_NULL", "SET_DEFAULT", "PROTECT", "DO_NOTHING",
     "JSONField", "ArrayField",
     "connect", "get_connection", "transaction", "execute", "registry",
+    "embeddings", "openai_compatible",
     "PookieError", "DoesNotExist", "MultipleObjectsReturned",
-    "ValidationError", "FieldError", "MigrationError",
+    "ValidationError", "FieldError", "MigrationError", "EmbeddingError",
 ]
