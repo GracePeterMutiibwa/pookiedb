@@ -2,7 +2,8 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from pookiedb.models.metaclass import ModelBase, Options
-from pookiedb.exceptions import ValidationError
+from pookiedb.exceptions import ValidationError, FieldError
+from pookiedb.fields.core import AutoField
 from pookiedb.fields.related import ManyToManyField, ForeignKey
 
 
@@ -34,6 +35,14 @@ class Model(metaclass=ModelBase):
     def __init__(self, **kwargs):
         self._state = ModelState()
         self._state.db = self._meta.db_alias
+
+        pk_name = self._meta.pk.name
+        for key in (pk_name, "pk"):
+            if key in kwargs:
+                raise FieldError(
+                    f"{self.__class__.__name__}.{pk_name} is the primary key and is generated "
+                    f"automatically; it can't be set."
+                )
 
         # Set defaults for all fields
         for field in self._meta.fields:
@@ -88,6 +97,11 @@ class Model(metaclass=ModelBase):
         if not name.startswith("_"):
             try:
                 meta = object.__getattribute__(self, "_meta")
+                if name in (meta.pk.name, "pk"):
+                    raise FieldError(
+                        f"{self.__class__.__name__}.{meta.pk.name} is the primary key and is "
+                        f"generated automatically; it can't be set."
+                    )
                 for field in meta.fields:
                     if field.name == name and not isinstance(field, (ForeignKey, ManyToManyField)):
                         self.__dict__[name] = field.to_python(value)
@@ -113,7 +127,9 @@ class Model(metaclass=ModelBase):
         pk_field = meta.pk
         pk_name = pk_field.name
         pk_col = pk_field.get_column_name()
-        pk_val = self.__dict__.get(pk_name)
+        pk_val = pk_field.to_db(self.__dict__.get(pk_name))
+        # AutoField pks come from the DB; AutoUUIDField pks are generated in __init__
+        db_generated_pk = isinstance(pk_field, AutoField)
 
         # Run pre_save hooks (auto_now, auto_now_add)
         is_adding = self._state.adding
@@ -128,11 +144,13 @@ class Model(metaclass=ModelBase):
             # INSERT
             fields_to_insert = [
                 f for f in meta.fields
-                if not f.primary_key
+                if not (f.primary_key and db_generated_pk)
                 and not isinstance(f, ManyToManyField)
             ]
             if update_fields:
-                fields_to_insert = [f for f in fields_to_insert if f.name in update_fields]
+                fields_to_insert = [
+                    f for f in fields_to_insert if f.name in update_fields or f.primary_key
+                ]
 
             cols = ", ".join(f'"{f.get_column_name()}"' for f in fields_to_insert)
             placeholders = ", ".join([ph] * len(fields_to_insert))
@@ -160,7 +178,8 @@ class Model(metaclass=ModelBase):
                 row = execute(sql, params, alias=meta.db_alias, fetch="one")
                 new_pk = row[pk_col] if row else None
 
-            self.__dict__[pk_name] = new_pk
+            if db_generated_pk:
+                self.__dict__[pk_name] = new_pk
             self._state.adding = False
 
         else:
@@ -194,7 +213,7 @@ class Model(metaclass=ModelBase):
         pool = get_connection(meta.db_alias)
         ph = "?" if pool.config.is_sqlite else "%s"
         pk_col = meta.pk.get_column_name()
-        pk_val = self.__dict__.get(meta.pk.name)
+        pk_val = meta.pk.to_db(self.__dict__.get(meta.pk.name))
         sql = f'DELETE FROM "{meta.db_table}" WHERE "{pk_col}" = {ph}'
         execute(sql, [pk_val], alias=meta.db_alias)
         self._state.adding = True

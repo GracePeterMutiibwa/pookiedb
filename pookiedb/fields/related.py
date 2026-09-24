@@ -58,13 +58,12 @@ class ForeignKey(RelatedField):
             self.db_column = f"{name}_id"
 
     def sql_type(self, engine: str) -> str:
-        return "INTEGER"
+        # Match the referenced primary key (INTEGER, BIGINT, UUID/TEXT)
+        return self.related_model._meta.pk.rel_db_type(engine)
 
     def sql_definition(self, engine: str) -> str:
         col = self.get_column_name()
-        related = self.related_model
-        related_pk = related._meta.pk.get_column_name()
-        parts = [f'"{col}" INTEGER']
+        parts = [f'"{col}" {self.sql_type(engine)}']
         if not self.null:
             parts.append("NOT NULL")
         if self.unique:
@@ -85,6 +84,9 @@ class ForeignKey(RelatedField):
     def to_python(self, value):
         return value  # Raw FK id
 
+    def to_db(self, value):
+        return self.related_model._meta.pk.to_db(value)
+
     def __get__(self, instance, owner):
         if instance is None:
             return self
@@ -102,14 +104,15 @@ class ForeignKey(RelatedField):
         if value is None:
             instance.__dict__[self.db_column] = None
             instance.__dict__.pop(f"_cache_{self.name}", None)
-        elif isinstance(value, int):
-            instance.__dict__[self.db_column] = value
-            instance.__dict__.pop(f"_cache_{self.name}", None)
-        else:
+        elif hasattr(value, "_meta"):
             # Assigned a model instance
             pk = getattr(value, value._meta.pk.name)
             instance.__dict__[self.db_column] = pk
             instance.__dict__[f"_cache_{self.name}"] = value
+        else:
+            # Assigned a raw pk (int or UUID)
+            instance.__dict__[self.db_column] = value
+            instance.__dict__.pop(f"_cache_{self.name}", None)
 
 
 class OneToOneField(ForeignKey):
@@ -163,15 +166,15 @@ class ManyToManyField(RelatedField):
         join_table = self.get_join_table_name()
         src_table = self.model._meta.db_table
         dst_table = self.related_table
-        src_pk = self.model._meta.pk.get_column_name()
-        dst_pk = self.related_model._meta.pk.get_column_name()
+        src_pk = self.model._meta.pk
+        dst_pk = self.related_model._meta.pk
         src_col = f"{src_table}_id"
         dst_col = f"{dst_table}_id"
         return (
             f'CREATE TABLE IF NOT EXISTS "{join_table}" (\n'
             f'    "id" INTEGER PRIMARY KEY {"AUTOINCREMENT" if engine == "sqlite" else "GENERATED ALWAYS AS IDENTITY"},\n'
-            f'    "{src_col}" INTEGER NOT NULL REFERENCES "{src_table}" ("{src_pk}") ON DELETE CASCADE,\n'
-            f'    "{dst_col}" INTEGER NOT NULL REFERENCES "{dst_table}" ("{dst_pk}") ON DELETE CASCADE,\n'
+            f'    "{src_col}" {src_pk.rel_db_type(engine)} NOT NULL REFERENCES "{src_table}" ("{src_pk.get_column_name()}") ON DELETE CASCADE,\n'
+            f'    "{dst_col}" {dst_pk.rel_db_type(engine)} NOT NULL REFERENCES "{dst_table}" ("{dst_pk.get_column_name()}") ON DELETE CASCADE,\n'
             f'    UNIQUE ("{src_col}", "{dst_col}")\n'
             f');'
         )
@@ -209,7 +212,12 @@ class ManyToManyManager:
 
     @property
     def _src_pk(self):
-        return getattr(self.instance, self.instance._meta.pk.name)
+        return self._pk_to_db(self.instance)
+
+    @staticmethod
+    def _pk_to_db(obj):
+        pk = obj._meta.pk
+        return pk.to_db(getattr(obj, pk.name))
 
     def _db_alias(self):
         return self.instance._state.db or "default"
@@ -241,7 +249,7 @@ class ManyToManyManager:
         pool = get_connection(alias)
         ph = "?" if pool.config.is_sqlite else "%s"
         for obj in objs:
-            pk = getattr(obj, obj._meta.pk.name)
+            pk = self._pk_to_db(obj)
             sql = (
                 f'INSERT INTO "{self._join_table}" ("{self._src_col}", "{self._dst_col}") '
                 f'VALUES ({ph}, {ph}) ON CONFLICT DO NOTHING'
@@ -259,7 +267,7 @@ class ManyToManyManager:
         pool = get_connection(alias)
         ph = "?" if pool.config.is_sqlite else "%s"
         for obj in objs:
-            pk = getattr(obj, obj._meta.pk.name)
+            pk = self._pk_to_db(obj)
             sql = (
                 f'DELETE FROM "{self._join_table}" '
                 f'WHERE "{self._src_col}" = {ph} AND "{self._dst_col}" = {ph}'

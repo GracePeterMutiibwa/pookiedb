@@ -1,6 +1,40 @@
 import re
 import math
+import os
+import threading
+import time
+import uuid
 from typing import Any
+
+
+_uuid7_lock = threading.Lock()
+_uuid7_last = 0
+
+
+def uuid7() -> uuid.UUID:
+    """
+    Time-ordered UUID (RFC 9562): 48-bit unix ms timestamp, version, then random bits.
+    Monotonic within the process, so values sort in creation order.
+    """
+    if hasattr(uuid, "uuid7"):  # Python 3.14+
+        return uuid.uuid7()
+
+    global _uuid7_last
+    ms = time.time_ns() // 1_000_000
+    rand = int.from_bytes(os.urandom(10), "big")
+    value = (
+        (ms & 0xFFFF_FFFF_FFFF) << 80
+        | 0x7 << 76                          # version
+        | (rand >> 62 & 0xFFF) << 64         # rand_a (12 bits)
+        | 0b10 << 62                         # variant
+        | rand & 0x3FFF_FFFF_FFFF_FFFF       # rand_b (62 bits)
+    )
+    with _uuid7_lock:
+        # Same millisecond (or clock went back): step past the last value to keep ordering
+        if value <= _uuid7_last:
+            value = _uuid7_last + 1
+        _uuid7_last = value
+    return uuid.UUID(int=value)
 
 
 def slugify(value: str) -> str:

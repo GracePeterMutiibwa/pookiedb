@@ -287,6 +287,11 @@ class QuerySet:
         set_params = []
         for k, v in kwargs.items():
             field = self._resolve_field(k)
+            if field.primary_key:
+                raise FieldError(
+                    f"{self.model.__name__}.{field.name} is the primary key and is generated "
+                    f"automatically; it can't be set."
+                )
             col = field.get_column_name()
             set_parts.append(f'"{col}" = {ph}')
             set_params.append(field.to_db(v))
@@ -361,6 +366,13 @@ class QuerySet:
         # If value is a model instance (e.g. filter(author=some_obj)), extract its pk
         if hasattr(value, '_meta'):
             value = getattr(value, value._meta.pk.name)
+
+        # Convert Python values (e.g. uuid.UUID) the same way the field stores them
+        if field is not None and lookup not in WILDCARD_LOOKUPS and lookup != "isnull":
+            if lookup in ("in", "range"):
+                value = [field.to_db(v) for v in value]
+            else:
+                value = field.to_db(value)
 
         if lookup == "isnull":
             if value:

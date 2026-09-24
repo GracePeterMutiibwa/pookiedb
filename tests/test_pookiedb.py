@@ -63,15 +63,34 @@ def db():
         class Meta:
             db_table = "user_profiles"
 
+    class Course(pookiedb.Model):
+        id    = pookiedb.AutoUUIDField()
+        title = pookiedb.CharField(max_length=100)
+        class Meta:
+            db_table = "courses"
+
+    class Student(pookiedb.Model):
+        userTag = pookiedb.AutoUUIDField()
+        name    = pookiedb.TextField()
+        age     = pookiedb.IntegerField()
+        course  = pookiedb.ForeignKey(Course, on_delete=pookiedb.SET_NULL, null=True)
+        courses = pookiedb.ManyToManyField(Course)
+        class Meta:
+            db_table = "students"
+
     Tag.create_table()
     Author.create_table()
     Post.create_table()
     UserProfile.create_table()
+    Course.create_table()
+    Student.create_table()
 
     db.Tag         = Tag
     db.Author      = Author
     db.Post        = Post
     db.UserProfile = UserProfile
+    db.Course      = Course
+    db.Student     = Student
     return db
 
 
@@ -82,6 +101,9 @@ def clean(db):
     pookiedb.execute('DELETE FROM "user_profiles"')
     pookiedb.execute('DELETE FROM "authors"')
     pookiedb.execute('DELETE FROM "tags"')
+    pookiedb.execute('DELETE FROM "courses_students"')
+    pookiedb.execute('DELETE FROM "students"')
+    pookiedb.execute('DELETE FROM "courses"')
     yield
 
 
@@ -1034,3 +1056,122 @@ def test_model_hash(db):
     assert hash(a) == hash(b)
     s = {a, b}
     assert len(s) == 1
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  Primary keys (AutoUUIDField + pk rules)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def make_student(db, name="John Doe", age=14, **kw):
+    return db.Student.objects.create(name=name, age=age, **kw)
+
+def test_autouuid_generated_and_persisted(db):
+    s = make_student(db)
+    assert isinstance(s.userTag, uuid.UUID) and s.userTag.version == 7
+    row = pookiedb.execute('SELECT "userTag" FROM "students"', fetch="one")
+    assert row["userTag"] == str(s.userTag)
+    assert db.Student.objects.first().userTag == s.userTag
+
+def test_autouuid_custom_name_has_no_id_column(db):
+    assert db.Student._meta.pk.name == "userTag"
+    assert "id" not in [f.name for f in db.Student._meta.fields]
+
+def test_autouuid_named_id_replaces_default(db):
+    assert isinstance(db.Course._meta.pk, pookiedb.AutoUUIDField)
+    assert [f.name for f in db.Course._meta.fields].count("id") == 1
+
+def test_autouuid_column_not_null(db):
+    assert "NOT NULL" in db.Student._meta.pk.sql_definition("sqlite")
+
+def test_autouuid_get_update_delete(db):
+    s = make_student(db)
+    assert db.Student.objects.get(pk=s.userTag).name == "John Doe"
+    s.name = "Jane Doe"
+    s.save()
+    assert db.Student.objects.get(userTag=s.userTag).name == "Jane Doe"
+    s.delete()
+    assert db.Student.objects.count() == 0
+
+def test_autouuid_first_last_follow_creation_order(db):
+    names = [f"s{i}" for i in range(5)]
+    for n in names:
+        make_student(db, name=n)
+    assert db.Student.objects.first().name == "s0"
+    assert db.Student.objects.last().name  == "s4"
+
+def test_autouuid_bulk_create(db):
+    db.Student.objects.bulk_create([db.Student(name="A", age=1), db.Student(name="B", age=2)])
+    assert db.Student.objects.filter(userTag__isnull=True).count() == 0
+    assert db.Student.objects.count() == 2
+
+def test_autouuid_fk_column_matches_pk_type(db):
+    fk = db.Student._meta.get_field("course")
+    assert fk.sql_definition("sqlite").startswith('"course_id" TEXT')
+    assert fk.sql_definition("postgresql").startswith('"course_id" UUID')
+
+def test_autouuid_fk_roundtrip(db):
+    c = db.Course.objects.create(title="Math")
+    s = make_student(db, course=c)
+    fetched = db.Student.objects.get(pk=s.userTag)
+    assert fetched.course.title == "Math"
+    assert db.Student.objects.filter(course=c).count() == 1
+
+def test_autouuid_m2m(db):
+    c1 = db.Course.objects.create(title="Math")
+    c2 = db.Course.objects.create(title="Art")
+    s  = make_student(db)
+    s.courses.add(c1, c2)
+    assert s.courses.count() == 2
+    s.courses.remove(c1)
+    assert [c.title for c in s.courses.all()] == ["Art"]
+
+def test_autouuid_takes_no_arguments():
+    with pytest.raises(TypeError):
+        pookiedb.AutoUUIDField(null=True)
+
+@pytest.mark.parametrize("kwargs", [
+    {"userTag": uuid.uuid4()},
+    {"pk": uuid.uuid4()},
+])
+def test_pk_cannot_be_passed(db, kwargs):
+    with pytest.raises(pookiedb.FieldError):
+        db.Student(name="X", age=1, **kwargs)
+
+def test_auto_int_pk_cannot_be_passed(db):
+    with pytest.raises(pookiedb.FieldError):
+        db.Author(id=5, name="X", email="x@ex.com")
+
+def test_pk_cannot_be_assigned(db):
+    s = make_student(db)
+    with pytest.raises(pookiedb.FieldError):
+        s.userTag = uuid.uuid4()
+
+def test_pk_cannot_be_bulk_updated(db):
+    make_student(db)
+    with pytest.raises(pookiedb.FieldError):
+        db.Student.objects.all().bulk_update(userTag=str(uuid.uuid4()))
+
+@pytest.mark.parametrize("fields", [
+    {"tag": lambda: pookiedb.UUIDField(auto=True, primary_key=True)},
+    {"code": lambda: pookiedb.CharField(max_length=5, primary_key=True)},
+    {"id": lambda: pookiedb.CharField(max_length=5)},
+    {"id": lambda: pookiedb.UUIDField()},
+    {"pk": lambda: pookiedb.IntegerField()},
+    {"a": lambda: pookiedb.AutoUUIDField(), "b": lambda: pookiedb.AutoUUIDField()},
+    {"seq": lambda: pookiedb.AutoField(primary_key=False)},
+])
+def test_invalid_primary_key_definitions(fields):
+    from pookiedb.db.registry import registry
+    before = len(registry)
+    namespace = {"__module__": __name__, **{k: make() for k, make in fields.items()}}
+    with pytest.raises(pookiedb.FieldError):
+        type("Invalid", (pookiedb.Model,), namespace)
+    assert len(registry) == before
+
+def test_uuid7_format_and_order():
+    from pookiedb.utils import uuid7
+    ids = [uuid7() for _ in range(1000)]
+    assert all(u.version == 7 and u.variant == uuid.RFC_4122 for u in ids)
+    assert ids == sorted(ids)
+    assert [str(u) for u in ids] == sorted(str(u) for u in ids)
+    assert len(set(ids)) == 1000

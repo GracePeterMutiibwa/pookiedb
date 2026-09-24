@@ -46,7 +46,7 @@ def _load_settings(settings: str):
 
 
 @click.group(invoke_without_command=True)
-@click.version_option("0.1.0", prog_name="pookiedb")
+@click.version_option(package_name="pookiedb", prog_name="pookiedb")
 @click.pass_context
 def cli(ctx):
     """🐾 Pookie ORM — A Django-style ORM by Grace Peter Mutiibwa."""

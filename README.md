@@ -195,11 +195,27 @@ class UserProfile(pookiedb.Model):
 | `UUIDField(auto=True)`                     | UUID / TEXT                           |
 | `AutoField()`                              | Auto-increment primary key            |
 | `BigAutoField()`                           | Big auto-increment primary key        |
+| `AutoUUIDField()`                          | UUIDv7 primary key (auto-generated)   |
 | `JSONField()`                              | JSONB (Postgres) / TEXT (SQLite)      |
 | `ArrayField(base_field)`                   | ARRAY (Postgres) / JSON TEXT (SQLite) |
 | `ForeignKey(to, on_delete)`                | Many-to-one FK                        |
 | `OneToOneField(to, on_delete)`             | Unique FK                             |
 | `ManyToManyField(to)`                      | Join table relationship               |
+
+### Primary keys
+
+Primary keys are always generated for you and can never be set by hand.
+
+```python
+class Student(pookiedb.Model):
+    userTag = pookiedb.AutoUUIDField()  # UUIDv7 primary key; no `id` column is added
+    name = pookiedb.TextField()
+```
+
+- No primary key declared → `id = AutoField()` is added.
+- Only `AutoField`, `BigAutoField` and `AutoUUIDField` can be primary keys, one per model.
+- `id` is reserved for the primary key, and `pk` is reserved as its alias (`get(pk=...)` works whatever the key is named).
+- Passing or assigning a primary key (`Student(userTag=...)`, `obj.userTag = ...`, `bulk_update(userTag=...)`) raises `FieldError`.
 
 ### Common field kwargs
 
